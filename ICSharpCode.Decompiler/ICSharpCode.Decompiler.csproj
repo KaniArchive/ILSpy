@@ -107,6 +107,8 @@
     <Compile Include="CSharp\CallBuilder.cs" />
     <Compile Include="CSharp\CSharpLanguageVersion.cs" />
     <Compile Include="CSharp\DecompiledTypeCacheEntry.cs" />
+    <Compile Include="CSharp\DecompiledDocumentSlice.cs" />
+    <Compile Include="CSharp\DecompiledTypeDocumentInfo.cs" />
     <Compile Include="CSharp\Syntax\Expressions\RecursivePatternExpression.cs" />
     <Compile Include="CSharp\Syntax\TypeMembers\ExtensionDeclaration.cs" />
     <Compile Include="DecompilationProgress.cs" />

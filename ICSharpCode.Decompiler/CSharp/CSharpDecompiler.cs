@@ -1213,6 +1213,48 @@ namespace ICSharpCode.Decompiler.CSharp
 			return new DecompiledTypeCacheEntry(fullTypeName, DecompileType(fullTypeName));
 		}
 
+		public DecompiledTypeDocumentInfo DecompileTypeForDocumentSlicing(FullTypeName fullTypeName)
+		{
+			var type = typeSystem.FindType(fullTypeName.TopLevelTypeName).GetDefinition();
+			if (type == null)
+				throw new InvalidOperationException($"Could not find type definition {fullTypeName} in type system.");
+			if (type.ParentModule != typeSystem.MainModule)
+				throw new NotSupportedException($"Type {fullTypeName} was not found in the module being decompiled, but only in {type.ParentModule.Name}");
+
+			var cacheEntry = DecompileTypeForSlicing(fullTypeName);
+			var membersByDocument = new Dictionary<string, List<EntityHandle>>(StringComparer.OrdinalIgnoreCase);
+			var unmappedMembers = new List<EntityHandle>();
+			CollectDocumentOwners(type, membersByDocument, unmappedMembers);
+			return new DecompiledTypeDocumentInfo(fullTypeName, cacheEntry, membersByDocument, unmappedMembers);
+		}
+
+		public IReadOnlyList<DecompiledDocumentSlice> DecompileTypeToDocumentSlices(FullTypeName fullTypeName)
+		{
+			var documentInfo = DecompileTypeForDocumentSlicing(fullTypeName);
+			if (documentInfo.MembersByDocument.Count == 0)
+				return EmptyList<DecompiledDocumentSlice>.Instance;
+
+			var carrierDocument = ChooseCarrierDocument(documentInfo);
+			var result = new List<DecompiledDocumentSlice>();
+			foreach (var pair in documentInfo.MembersByDocument.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+			{
+				var selectedHandles = new HashSet<EntityHandle>(pair.Value);
+				bool preserveSharedTypeMembers = string.Equals(pair.Key, carrierDocument, StringComparison.OrdinalIgnoreCase);
+				if (preserveSharedTypeMembers)
+				{
+					foreach (var handle in documentInfo.UnmappedMembers)
+						selectedHandles.Add(handle);
+				}
+
+				var slice = SliceSyntaxTree(documentInfo.CacheEntry.CreateClone(), selectedHandles, preserveSharedTypeMembers);
+				if (slice != null)
+				{
+					result.Add(new DecompiledDocumentSlice(pair.Key, slice, pair.Value));
+				}
+			}
+			return result;
+		}
+
 		/// <summary>
 		/// Decompile the specified types and/or members.
 		/// </summary>
@@ -1308,6 +1350,189 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 			RunTransforms(syntaxTree, decompileRun, parentTypeDef != null ? new SimpleTypeResolveContext(parentTypeDef) : new SimpleTypeResolveContext(typeSystem.MainModule));
 			return syntaxTree;
+		}
+
+		void CollectDocumentOwners(ITypeDefinition typeDef, Dictionary<string, List<EntityHandle>> membersByDocument, List<EntityHandle> unmappedMembers)
+		{
+			foreach (var nestedType in typeDef.NestedTypes)
+			{
+				CollectDocumentOwners(nestedType, membersByDocument, unmappedMembers);
+			}
+
+			foreach (var field in typeDef.Fields)
+			{
+				AddOwnedHandle((FieldDefinitionHandle)field.MetadataToken, TryGetDocumentForField(typeDef, field));
+			}
+			foreach (var method in typeDef.Methods)
+			{
+				AddOwnedHandle((MethodDefinitionHandle)method.MetadataToken, TryGetPrimaryDocumentUrl((MethodDefinitionHandle)method.MetadataToken));
+			}
+			foreach (var property in typeDef.Properties)
+			{
+				AddOwnedHandle((PropertyDefinitionHandle)property.MetadataToken, TryGetDocumentForProperty(property));
+			}
+			foreach (var ev in typeDef.Events)
+			{
+				AddOwnedHandle((EventDefinitionHandle)ev.MetadataToken, TryGetDocumentForEvent(ev));
+			}
+
+			void AddOwnedHandle(EntityHandle handle, string documentUrl)
+			{
+				if (string.IsNullOrWhiteSpace(documentUrl))
+				{
+					unmappedMembers.Add(handle);
+					return;
+				}
+				if (!membersByDocument.TryGetValue(documentUrl, out var list))
+				{
+					list = new List<EntityHandle>();
+					membersByDocument.Add(documentUrl, list);
+				}
+				list.Add(handle);
+			}
+		}
+
+		string TryGetDocumentForField(ITypeDefinition declaringType, IField field)
+		{
+			foreach (var method in declaringType.Methods)
+			{
+				if (method.MetadataToken.IsNil)
+					continue;
+				var documentUrl = TryGetPrimaryDocumentUrl((MethodDefinitionHandle)method.MetadataToken);
+				if (!string.IsNullOrWhiteSpace(documentUrl))
+					return documentUrl;
+			}
+			return null;
+		}
+
+		string TryGetDocumentForProperty(IProperty property)
+		{
+			return TryGetPrimaryDocumentUrl(property.Getter != null ? (MethodDefinitionHandle?)property.Getter.MetadataToken : null)
+				?? TryGetPrimaryDocumentUrl(property.Setter != null ? (MethodDefinitionHandle?)property.Setter.MetadataToken : null);
+		}
+
+		string TryGetDocumentForEvent(IEvent ev)
+		{
+			return TryGetPrimaryDocumentUrl(ev.AddAccessor != null ? (MethodDefinitionHandle?)ev.AddAccessor.MetadataToken : null)
+				?? TryGetPrimaryDocumentUrl(ev.RemoveAccessor != null ? (MethodDefinitionHandle?)ev.RemoveAccessor.MetadataToken : null)
+				?? TryGetPrimaryDocumentUrl(ev.InvokeAccessor != null ? (MethodDefinitionHandle?)ev.InvokeAccessor.MetadataToken : null);
+		}
+
+		string TryGetPrimaryDocumentUrl(MethodDefinitionHandle? methodHandle)
+		{
+			if (methodHandle == null || methodHandle.Value.IsNil || DebugInfoProvider == null)
+				return null;
+			foreach (var sequencePoint in DebugInfoProvider.GetSequencePoints(methodHandle.Value))
+			{
+				if (!sequencePoint.IsHidden && !string.IsNullOrWhiteSpace(sequencePoint.DocumentUrl))
+					return sequencePoint.DocumentUrl;
+			}
+			return null;
+		}
+
+		static string ChooseCarrierDocument(DecompiledTypeDocumentInfo documentInfo)
+		{
+			string simpleTypeName = documentInfo.TypeName.Name + ".cs";
+			return documentInfo.MembersByDocument.Keys
+				.OrderByDescending(path => path.EndsWith("/" + simpleTypeName, StringComparison.OrdinalIgnoreCase)
+					|| path.EndsWith("\\" + simpleTypeName, StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(path, simpleTypeName, StringComparison.OrdinalIgnoreCase))
+				.ThenBy(path => IsGeneratedPath(path))
+				.ThenBy(path => path.Count(ch => ch == '/' || ch == '\\'))
+				.ThenBy(path => path.Length)
+				.ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+				.First();
+		}
+
+		static bool IsGeneratedPath(string path)
+		{
+			path = path.Replace('\\', '/');
+			return path.Contains("/Generated/", StringComparison.OrdinalIgnoreCase)
+				|| path.Contains("/generated/", StringComparison.OrdinalIgnoreCase)
+				|| path.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)
+				|| path.EndsWith(".Generated.cs", StringComparison.OrdinalIgnoreCase)
+				|| path.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase);
+		}
+
+		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers)
+		{
+			foreach (var member in tree.Members.ToList().Where(member => !PruneNode(member, selectedTokens, preserveSharedTypeMembers)))
+				member.Remove();
+
+			if (tree.Members.Count == 0)
+				return null;
+			var topLevelType = FindFirstTopLevelType(tree);
+			topLevelType?.Modifiers |= Modifiers.Partial;
+			return tree;
+		}
+
+		static bool PruneNode(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers)
+		{
+			switch (node)
+			{
+				case NamespaceDeclaration ns:
+					foreach (var member in ns.Members.ToList().Where(member => !PruneNode(member, selectedTokens, preserveSharedTypeMembers)))
+						member.Remove();
+					return ns.Members.Count > 0;
+				case TypeDeclaration typeDecl:
+					foreach (var member in typeDecl.Members.ToList().Where(member => !PruneNode(member, selectedTokens, preserveSharedTypeMembers)))
+						member.Remove();
+					return typeDecl.Members.Count > 0 || HasSelectedDeclaration(typeDecl, selectedTokens) || preserveSharedTypeMembers;
+				case EntityDeclaration entity:
+					return HasSelectedDeclaration(entity, selectedTokens) || preserveSharedTypeMembers && IsSharedTypeLevelMember(entity);
+				default:
+					return false;
+			}
+		}
+
+		static bool HasSelectedDeclaration(AstNode node, HashSet<EntityHandle> selectedTokens)
+		{
+			if (node.GetSymbol() is IEntity { MetadataToken.IsNil: false } entity && selectedTokens.Contains(entity.MetadataToken))
+				return true;
+
+			foreach (var child in node.Children)
+				if ((child is EntityDeclaration || child is NamespaceDeclaration) && HasSelectedDeclaration(child, selectedTokens))
+					return true;
+
+			return false;
+		}
+
+		static bool IsSharedTypeLevelMember(EntityDeclaration entity)
+		{
+			switch (entity)
+			{
+				case FieldDeclaration:
+				case PropertyDeclaration:
+				case EventDeclaration:
+				case IndexerDeclaration:
+				case OperatorDeclaration:
+				case ConstructorDeclaration:
+				case DestructorDeclaration:
+				case TypeDeclaration:
+				case DelegateDeclaration:
+				case EnumMemberDeclaration:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		static TypeDeclaration FindFirstTopLevelType(SyntaxTree tree)
+		{
+			foreach (var member in tree.Members)
+			{
+				switch (member)
+				{
+					case TypeDeclaration typeDecl:
+						return typeDecl;
+					case NamespaceDeclaration ns:
+						var nested = ns.Members.OfType<TypeDeclaration>().FirstOrDefault();
+						if (nested != null)
+							return nested;
+						break;
+				}
+			}
+			return null;
 		}
 
 		public SyntaxTree DecompileExtension(EntityHandle handle)
