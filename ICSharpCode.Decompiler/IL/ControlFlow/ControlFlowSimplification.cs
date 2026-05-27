@@ -43,7 +43,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 
 		public void Run(ILFunction function, ILTransformContext context)
 		{
-			foreach (var block in function.Descendants.OfType<Block>())
+			foreach (var block in function.Descendants.OfType<Block>().ToList())
 			{
 				context.CancellationToken.ThrowIfCancellationRequested();
 
@@ -71,7 +71,13 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 			}
 
 			// Remove 'nop' instructions
-			block.Instructions.RemoveAll(inst => inst.OpCode == OpCode.Nop);
+			for (int i = block.Instructions.Count - 1; i >= 0; i--)
+			{
+				if (block.Instructions[i].OpCode == OpCode.Nop)
+				{
+					block.Instructions.RemoveAt(i);
+				}
+			}
 		}
 
 		private static void RemoveDeadStackStores(Block block, ILTransformContext context)
@@ -201,9 +207,9 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 
 		void CleanUpEmptyBlocks(ILFunction function, ILTransformContext context)
 		{
-			foreach (var container in function.Descendants.OfType<BlockContainer>())
+			foreach (var container in function.Descendants.OfType<BlockContainer>().ToList())
 			{
-				foreach (var block in container.Blocks)
+				foreach (var block in container.Blocks.ToList())
 				{
 					if (block.Instructions.Count == 0)
 						continue; // block is already marked for deletion
@@ -266,7 +272,7 @@ namespace ICSharpCode.Decompiler.IL.ControlFlow
 
 			block.Instructions.Remove(br);
 			block.Instructions.AddRange(targetBlock.Instructions);
-			targetBlock.Instructions.Clear(); // mark targetBlock for deletion
+			targetBlock.Remove();
 			return true;
 		}
 

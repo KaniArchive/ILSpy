@@ -2696,23 +2696,7 @@ namespace ICSharpCode.Decompiler.CSharp
 							translatedTarget = translatedTarget.ConvertTo(new ByReferenceType(constrainedTo ?? memberDeclaringType), this);
 						}
 					}
-					if (translatedTarget.Expression is DirectionExpression)
-					{
-						// (ref x).member => x.member
-						translatedTarget = translatedTarget.UnwrapChild(((DirectionExpression)translatedTarget).Expression);
-					}
-					else if (translatedTarget.Expression is UnaryOperatorExpression uoe
-					  && uoe.Operator == UnaryOperatorType.NullConditional
-					  && uoe.Expression is DirectionExpression)
-					{
-						// (ref x)?.member => x?.member
-						translatedTarget = translatedTarget.UnwrapChild(((DirectionExpression)uoe.Expression).Expression);
-						// note: we need to create a new ResolveResult for the null-conditional operator,
-						// using the underlying type of the input expression without the DirectionExpression
-						translatedTarget = new UnaryOperatorExpression(UnaryOperatorType.NullConditional, translatedTarget)
-							.WithRR(new ResolveResult(NullableType.GetUnderlyingType(translatedTarget.Type)))
-							.WithoutILInstruction();
-					}
+					translatedTarget = StripDirectionExpressionForMemberAccess(translatedTarget);
 					translatedTarget = EnsureTargetNotNullable(translatedTarget, target);
 					return translatedTarget;
 				}
@@ -4329,10 +4313,57 @@ namespace ICSharpCode.Decompiler.CSharp
 
 			var translatedTarget = Translate(inst, targetType).ConvertTo(targetType, this);
 
-			if (argumentInfo.HasFlag(CSharpArgumentInfoFlags.IsRef) && translatedTarget.Expression is DirectionExpression)
+			if (argumentInfo.HasFlag(CSharpArgumentInfoFlags.IsRef))
+			{
+				translatedTarget = StripDirectionExpressionForMemberAccess(translatedTarget);
+			}
+
+			return translatedTarget;
+		}
+
+		TranslatedExpression StripDirectionExpressionForMemberAccess(TranslatedExpression translatedTarget)
+		{
+			if (translatedTarget.Expression is DirectionExpression directionExpression)
 			{
 				// (ref x).member => x.member
-				translatedTarget = translatedTarget.UnwrapChild(((DirectionExpression)translatedTarget).Expression);
+				return translatedTarget.UnwrapChild(directionExpression.Expression);
+			}
+
+			if (translatedTarget.Expression is CastExpression castExpression
+				&& castExpression.Expression is DirectionExpression castDirectionExpression)
+			{
+				// ((T)(ref x)).member => ((T)x).member
+				var unwrappedTarget = translatedTarget.UnwrapChild(castDirectionExpression.Expression);
+				return new CastExpression(castExpression.Type.Clone(), unwrappedTarget)
+					.WithRR(translatedTarget.ResolveResult)
+					.WithILInstruction(translatedTarget.ILInstructions);
+			}
+
+			if (translatedTarget.Expression is UnaryOperatorExpression uoe
+				&& uoe.Operator == UnaryOperatorType.NullConditional)
+			{
+				if (uoe.Expression is DirectionExpression nullConditionalDirectionExpression)
+				{
+					// (ref x)?.member => x?.member
+					var unwrappedTarget = translatedTarget.UnwrapChild(nullConditionalDirectionExpression.Expression);
+					return new UnaryOperatorExpression(UnaryOperatorType.NullConditional, unwrappedTarget)
+						.WithRR(new ResolveResult(NullableType.GetUnderlyingType(unwrappedTarget.Type)))
+						.WithoutILInstruction();
+				}
+
+				if (uoe.Expression is CastExpression nullConditionalCastExpression
+					&& nullConditionalCastExpression.Expression is DirectionExpression nullConditionalCastDirectionExpression)
+				{
+					// ((T)(ref x))?.member => ((T)x)?.member
+					var unwrappedTarget = translatedTarget.UnwrapChild(nullConditionalCastDirectionExpression.Expression);
+					var castTarget = new CastExpression(nullConditionalCastExpression.Type.Clone(), unwrappedTarget)
+						.WithRR(unwrappedTarget.ResolveResult)
+						.WithoutILInstruction();
+					var castTargetType = unwrappedTarget.ResolveResult.Type;
+					return new UnaryOperatorExpression(UnaryOperatorType.NullConditional, castTarget)
+						.WithRR(new ResolveResult(NullableType.GetUnderlyingType(castTargetType)))
+						.WithoutILInstruction();
+				}
 			}
 
 			return translatedTarget;

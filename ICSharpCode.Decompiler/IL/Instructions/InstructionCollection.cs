@@ -191,11 +191,35 @@ namespace ICSharpCode.Decompiler.IL
 		public void AddRange(IEnumerable<T> values)
 		{
 			parentInstruction.AssertNoEnumerators();
-			foreach (T value in values)
+			if (ReferenceEquals(values, this))
 			{
-				value.ChildIndex = list.Count + firstChildIndex;
-				list.Add(value);
-				parentInstruction.InstructionCollectionAdded(value);
+				var snapshot = list.ToArray();
+				for (int i = 0; i < snapshot.Length; i++)
+				{
+					T value = snapshot[i];
+					value.ChildIndex = list.Count + firstChildIndex;
+					list.Add(value);
+					parentInstruction.InstructionCollectionAdded(value);
+				}
+			}
+			else if (values is IReadOnlyList<T> valueList)
+			{
+				for (int i = 0; i < valueList.Count; i++)
+				{
+					T value = valueList[i];
+					value.ChildIndex = list.Count + firstChildIndex;
+					list.Add(value);
+					parentInstruction.InstructionCollectionAdded(value);
+				}
+			}
+			else
+			{
+				foreach (T value in values)
+				{
+					value.ChildIndex = list.Count + firstChildIndex;
+					list.Add(value);
+					parentInstruction.InstructionCollectionAdded(value);
+				}
 			}
 			parentInstruction.InstructionCollectionUpdateComplete();
 		}
