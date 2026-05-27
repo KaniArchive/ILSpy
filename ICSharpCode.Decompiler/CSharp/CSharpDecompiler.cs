@@ -1208,6 +1208,11 @@ namespace ICSharpCode.Decompiler.CSharp
 			return SyntaxTreeToString(DecompileType(fullTypeName));
 		}
 
+		public DecompiledTypeCacheEntry DecompileTypeForSlicing(FullTypeName fullTypeName)
+		{
+			return new DecompiledTypeCacheEntry(fullTypeName, DecompileType(fullTypeName));
+		}
+
 		/// <summary>
 		/// Decompile the specified types and/or members.
 		/// </summary>
