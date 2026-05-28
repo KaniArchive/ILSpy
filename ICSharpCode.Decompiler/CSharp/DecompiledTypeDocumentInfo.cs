@@ -11,12 +11,14 @@ namespace ICSharpCode.Decompiler.CSharp
 	{
 		readonly IReadOnlyDictionary<string, IReadOnlyList<EntityHandle>> membersByDocument;
 		readonly IReadOnlyList<EntityHandle> unmappedMembers;
+		readonly IReadOnlyList<DecompiledDocumentSlice> documentSlices;
 
 		internal DecompiledTypeDocumentInfo(
 			FullTypeName typeName,
 			DecompiledTypeCacheEntry cacheEntry,
 			Dictionary<string, List<EntityHandle>> membersByDocument,
-			List<EntityHandle> unmappedMembers)
+			List<EntityHandle> unmappedMembers,
+			List<DecompiledDocumentSlice> documentSlices)
 		{
 			this.TypeName = typeName;
 			this.CacheEntry = cacheEntry;
@@ -25,6 +27,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				pair => (IReadOnlyList<EntityHandle>)new ReadOnlyCollection<EntityHandle>(pair.Value)
 			);
 			this.unmappedMembers = new ReadOnlyCollection<EntityHandle>(unmappedMembers);
+			this.documentSlices = new ReadOnlyCollection<DecompiledDocumentSlice>(documentSlices);
 		}
 
 		public FullTypeName TypeName { get; }
@@ -34,5 +37,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		public IReadOnlyDictionary<string, IReadOnlyList<EntityHandle>> MembersByDocument => membersByDocument;
 
 		public IReadOnlyList<EntityHandle> UnmappedMembers => unmappedMembers;
+
+		public IReadOnlyList<DecompiledDocumentSlice> DocumentSlices => documentSlices;
 	}
 }

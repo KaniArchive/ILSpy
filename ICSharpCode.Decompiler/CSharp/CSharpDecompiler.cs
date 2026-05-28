@@ -1225,28 +1225,34 @@ namespace ICSharpCode.Decompiler.CSharp
 			var membersByDocument = new Dictionary<string, List<EntityHandle>>(StringComparer.OrdinalIgnoreCase);
 			var unmappedMembers = new List<EntityHandle>();
 			CollectDocumentOwners(type, membersByDocument, unmappedMembers);
-			return new DecompiledTypeDocumentInfo(fullTypeName, cacheEntry, membersByDocument, unmappedMembers);
+			var documentSlices = BuildDocumentSlices(fullTypeName, cacheEntry, membersByDocument, unmappedMembers);
+			return new DecompiledTypeDocumentInfo(fullTypeName, cacheEntry, membersByDocument, unmappedMembers, documentSlices);
 		}
 
 		public IReadOnlyList<DecompiledDocumentSlice> DecompileTypeToDocumentSlices(FullTypeName fullTypeName)
 		{
-			var documentInfo = DecompileTypeForDocumentSlicing(fullTypeName);
-			if (documentInfo.MembersByDocument.Count == 0)
-				return EmptyList<DecompiledDocumentSlice>.Instance;
+			return DecompileTypeForDocumentSlicing(fullTypeName).DocumentSlices;
+		}
 
+		List<DecompiledDocumentSlice> BuildDocumentSlices(FullTypeName fullTypeName, DecompiledTypeCacheEntry cacheEntry, Dictionary<string, List<EntityHandle>> membersByDocument, List<EntityHandle> unmappedMembers)
+		{
+			if (membersByDocument.Count == 0)
+				return new List<DecompiledDocumentSlice>();
+
+			var documentInfo = new DecompiledTypeDocumentInfo(fullTypeName, cacheEntry, membersByDocument, unmappedMembers, new List<DecompiledDocumentSlice>());
 			var carrierDocument = ChooseCarrierDocument(documentInfo);
 			var result = new List<DecompiledDocumentSlice>();
-			foreach (var pair in documentInfo.MembersByDocument.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+			foreach (var pair in membersByDocument.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
 			{
 				var selectedHandles = new HashSet<EntityHandle>(pair.Value);
 				bool preserveSharedTypeMembers = string.Equals(pair.Key, carrierDocument, StringComparison.OrdinalIgnoreCase);
 				if (preserveSharedTypeMembers)
 				{
-					foreach (var handle in documentInfo.UnmappedMembers)
+					foreach (var handle in unmappedMembers)
 						selectedHandles.Add(handle);
 				}
 
-				var slice = SliceSyntaxTree(documentInfo.CacheEntry.CreateClone(), selectedHandles, preserveSharedTypeMembers);
+				var slice = SliceSyntaxTree(cacheEntry.CreateClone(), selectedHandles, preserveSharedTypeMembers);
 				if (slice != null)
 				{
 					result.Add(new DecompiledDocumentSlice(pair.Key, slice, pair.Value));
@@ -1361,19 +1367,23 @@ namespace ICSharpCode.Decompiler.CSharp
 
 			foreach (var field in typeDef.Fields)
 			{
-				AddOwnedHandle((FieldDefinitionHandle)field.MetadataToken, TryGetDocumentForField(typeDef, field));
+				if (field.MetadataToken.Kind == HandleKind.FieldDefinition)
+					AddOwnedHandle((FieldDefinitionHandle)field.MetadataToken, TryGetDocumentForField(typeDef, field));
 			}
 			foreach (var method in typeDef.Methods)
 			{
-				AddOwnedHandle((MethodDefinitionHandle)method.MetadataToken, TryGetPrimaryDocumentUrl((MethodDefinitionHandle)method.MetadataToken));
+				if (method.MetadataToken.Kind == HandleKind.MethodDefinition)
+					AddOwnedHandle((MethodDefinitionHandle)method.MetadataToken, TryGetPrimaryDocumentUrl((MethodDefinitionHandle)method.MetadataToken));
 			}
 			foreach (var property in typeDef.Properties)
 			{
-				AddOwnedHandle((PropertyDefinitionHandle)property.MetadataToken, TryGetDocumentForProperty(property));
+				if (property.MetadataToken.Kind == HandleKind.PropertyDefinition)
+					AddOwnedHandle((PropertyDefinitionHandle)property.MetadataToken, TryGetDocumentForProperty(property));
 			}
 			foreach (var ev in typeDef.Events)
 			{
-				AddOwnedHandle((EventDefinitionHandle)ev.MetadataToken, TryGetDocumentForEvent(ev));
+				if (ev.MetadataToken.Kind == HandleKind.EventDefinition)
+					AddOwnedHandle((EventDefinitionHandle)ev.MetadataToken, TryGetDocumentForEvent(ev));
 			}
 
 			void AddOwnedHandle(EntityHandle handle, string documentUrl)
@@ -1407,15 +1417,22 @@ namespace ICSharpCode.Decompiler.CSharp
 
 		string TryGetDocumentForProperty(IProperty property)
 		{
-			return TryGetPrimaryDocumentUrl(property.Getter != null ? (MethodDefinitionHandle?)property.Getter.MetadataToken : null)
-				?? TryGetPrimaryDocumentUrl(property.Setter != null ? (MethodDefinitionHandle?)property.Setter.MetadataToken : null);
+			return TryGetPrimaryDocumentUrl(GetMethodDefinitionHandle(property.Getter))
+				?? TryGetPrimaryDocumentUrl(GetMethodDefinitionHandle(property.Setter));
 		}
 
 		string TryGetDocumentForEvent(IEvent ev)
 		{
-			return TryGetPrimaryDocumentUrl(ev.AddAccessor != null ? (MethodDefinitionHandle?)ev.AddAccessor.MetadataToken : null)
-				?? TryGetPrimaryDocumentUrl(ev.RemoveAccessor != null ? (MethodDefinitionHandle?)ev.RemoveAccessor.MetadataToken : null)
-				?? TryGetPrimaryDocumentUrl(ev.InvokeAccessor != null ? (MethodDefinitionHandle?)ev.InvokeAccessor.MetadataToken : null);
+			return TryGetPrimaryDocumentUrl(GetMethodDefinitionHandle(ev.AddAccessor))
+				?? TryGetPrimaryDocumentUrl(GetMethodDefinitionHandle(ev.RemoveAccessor))
+				?? TryGetPrimaryDocumentUrl(GetMethodDefinitionHandle(ev.InvokeAccessor));
+		}
+
+		MethodDefinitionHandle? GetMethodDefinitionHandle(IMethod method)
+		{
+			if (method == null)
+				return null;
+			return method.MetadataToken.Kind == HandleKind.MethodDefinition ? (MethodDefinitionHandle?)method.MetadataToken : null;
 		}
 
 		string TryGetPrimaryDocumentUrl(MethodDefinitionHandle? methodHandle)
