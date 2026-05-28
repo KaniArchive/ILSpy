@@ -1234,6 +1234,37 @@ namespace ICSharpCode.Decompiler.CSharp
 			return DecompileTypeForDocumentSlicing(fullTypeName).DocumentSlices;
 		}
 
+		public SyntaxTree DecompileTypeDocumentSlice(FullTypeName fullTypeName, IEnumerable<EntityHandle> selectedHandles, bool preserveSharedTypeMembers)
+		{
+			if (selectedHandles == null)
+				throw new ArgumentNullException(nameof(selectedHandles));
+
+			var cacheEntry = DecompileTypeForSlicing(fullTypeName);
+			return SliceSyntaxTree(cacheEntry.CreateClone(), selectedHandles.ToHashSet(), preserveSharedTypeMembers, preserveSharedTypeMembers);
+		}
+
+		public IReadOnlyList<DecompiledDocumentSlice> DecompileTypeToSourceDocumentSlices(FullTypeName fullTypeName, IEnumerable<SourceDocumentSliceRequest> requests)
+		{
+			if (requests == null)
+				throw new ArgumentNullException(nameof(requests));
+
+			var requestList = requests.Where(request => !string.IsNullOrWhiteSpace(request.DocumentPath)).ToList();
+			if (requestList.Count == 0)
+				return EmptyList<DecompiledDocumentSlice>.Instance;
+
+			var type = typeSystem.FindType(fullTypeName.TopLevelTypeName).GetDefinition();
+			if (type == null)
+				throw new InvalidOperationException($"Could not find type definition {fullTypeName} in type system.");
+			if (type.ParentModule != typeSystem.MainModule)
+				throw new NotSupportedException($"Type {fullTypeName} was not found in the module being decompiled, but only in {type.ParentModule.Name}");
+
+			var cacheEntry = DecompileTypeForSlicing(fullTypeName);
+			var membersByDocument = new Dictionary<string, List<EntityHandle>>(StringComparer.OrdinalIgnoreCase);
+			var unmappedMembers = new List<EntityHandle>();
+			CollectDocumentOwners(type, membersByDocument, unmappedMembers);
+			return BuildRequestedDocumentSlices(fullTypeName, cacheEntry, membersByDocument, unmappedMembers, requestList);
+		}
+
 		List<DecompiledDocumentSlice> BuildDocumentSlices(FullTypeName fullTypeName, DecompiledTypeCacheEntry cacheEntry, Dictionary<string, List<EntityHandle>> membersByDocument, List<EntityHandle> unmappedMembers)
 		{
 			if (membersByDocument.Count == 0)
@@ -1252,10 +1283,46 @@ namespace ICSharpCode.Decompiler.CSharp
 						selectedHandles.Add(handle);
 				}
 
-				var slice = SliceSyntaxTree(cacheEntry.CreateClone(), selectedHandles, preserveSharedTypeMembers);
+				var slice = SliceSyntaxTree(cacheEntry.CreateClone(), selectedHandles, true, preserveSharedTypeMembers);
 				if (slice != null)
 				{
 					result.Add(new DecompiledDocumentSlice(pair.Key, slice, pair.Value));
+				}
+			}
+			return result;
+		}
+
+		List<DecompiledDocumentSlice> BuildRequestedDocumentSlices(FullTypeName fullTypeName, DecompiledTypeCacheEntry cacheEntry, Dictionary<string, List<EntityHandle>> membersByDocument, List<EntityHandle> unmappedMembers, IReadOnlyList<SourceDocumentSliceRequest> requests)
+		{
+			var carrierDocument = ChooseCarrierDocument(fullTypeName, requests);
+			var result = new List<DecompiledDocumentSlice>();
+			foreach (var request in requests)
+			{
+				var selectedHandles = new HashSet<EntityHandle>(request.MemberHandles);
+				if (selectedHandles.Count == 0)
+				{
+					var matchedDocument = membersByDocument.Keys.FirstOrDefault(path => DocumentPathsMatch(path, request.DocumentPath, requests));
+					if (matchedDocument != null)
+						selectedHandles.UnionWith(membersByDocument[matchedDocument]);
+				}
+
+				bool preserveSharedTypeMembers = string.Equals(request.DocumentPath, carrierDocument, StringComparison.OrdinalIgnoreCase);
+				if (preserveSharedTypeMembers)
+				{
+					foreach (var handle in unmappedMembers)
+					{
+						if (handle.Kind != HandleKind.MethodDefinition)
+							selectedHandles.Add(handle);
+					}
+				}
+
+				if (selectedHandles.Count == 0)
+					continue;
+
+				var slice = SliceSyntaxTree(cacheEntry.CreateClone(), selectedHandles, requests.Count > 1, preserveSharedTypeMembers);
+				if (slice != null)
+				{
+					result.Add(new DecompiledDocumentSlice(request.DocumentPath, slice, selectedHandles.ToList()));
 				}
 			}
 			return result;
@@ -1461,6 +1528,55 @@ namespace ICSharpCode.Decompiler.CSharp
 				.First();
 		}
 
+		static string ChooseCarrierDocument(FullTypeName fullTypeName, IReadOnlyList<SourceDocumentSliceRequest> requests)
+		{
+			string simpleTypeName = fullTypeName.Name + ".cs";
+			return requests
+				.Where(request => !request.IsGenerated)
+				.DefaultIfEmpty(requests.First())
+				.OrderByDescending(request => PathEndsWith(request.DocumentPath, simpleTypeName))
+				.ThenBy(request => request.DocumentPath.Count(ch => ch == '/' || ch == '\\'))
+				.ThenBy(request => request.DocumentPath.Length)
+				.ThenBy(request => request.DocumentPath, StringComparer.OrdinalIgnoreCase)
+				.First()
+				.DocumentPath;
+		}
+
+		static bool DocumentPathsMatch(string documentPath, string requestedPath, IReadOnlyList<SourceDocumentSliceRequest> requests)
+		{
+			var normalized = NormalizeDocumentPath(documentPath, requests);
+			var normalizedRequestedPath = NormalizePath(requestedPath);
+			return normalized.Equals(normalizedRequestedPath, StringComparison.OrdinalIgnoreCase);
+		}
+
+		static string NormalizeDocumentPath(string documentPath, IReadOnlyList<SourceDocumentSliceRequest> requests)
+		{
+			var normalized = NormalizePath(documentPath);
+			foreach (var relativePath in requests
+				.Select(request => NormalizePath(request.DocumentPath))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.OrderByDescending(path => path.Length))
+			{
+				if (normalized.Equals(relativePath, StringComparison.OrdinalIgnoreCase)
+					|| normalized.EndsWith("/" + relativePath, StringComparison.OrdinalIgnoreCase))
+					return relativePath;
+			}
+
+			return normalized;
+		}
+
+		static string NormalizePath(string path)
+		{
+			return path.Replace('\\', '/');
+		}
+
+		static bool PathEndsWith(string path, string fileName)
+		{
+			path = NormalizePath(path);
+			return path.EndsWith("/" + fileName, StringComparison.OrdinalIgnoreCase)
+				|| string.Equals(path, fileName, StringComparison.OrdinalIgnoreCase);
+		}
+
 		static bool IsGeneratedPath(string path)
 		{
 			path = path.Replace('\\', '/');
@@ -1471,13 +1587,15 @@ namespace ICSharpCode.Decompiler.CSharp
 				|| path.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase);
 		}
 
-		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers)
+		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool forcePartial, bool preserveSharedTypeMembers)
 		{
 			foreach (var member in tree.Members.ToList().Where(member => !PruneNode(member, selectedTokens, preserveSharedTypeMembers)))
 				member.Remove();
 
 			if (tree.Members.Count == 0)
 				return null;
+			if (!forcePartial)
+				return tree;
 			var topLevelType = FindFirstTopLevelType(tree);
 			topLevelType?.Modifiers |= Modifiers.Partial;
 			return tree;

@@ -109,6 +109,7 @@
     <Compile Include="CSharp\DecompiledTypeCacheEntry.cs" />
     <Compile Include="CSharp\DecompiledDocumentSlice.cs" />
     <Compile Include="CSharp\DecompiledTypeDocumentInfo.cs" />
+    <Compile Include="CSharp\SourceDocumentSliceRequest.cs" />
     <Compile Include="CSharp\Syntax\Expressions\RecursivePatternExpression.cs" />
     <Compile Include="CSharp\Syntax\TypeMembers\ExtensionDeclaration.cs" />
     <Compile Include="DecompilationProgress.cs" />
