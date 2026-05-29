@@ -1648,6 +1648,9 @@ namespace ICSharpCode.Decompiler.CSharp
 			if (!ownsTypeDeclaration)
 				return PruneNode(typeDecl, selectedTokens, preserveSharedTypeMembers);
 
+			if (!preserveOwnedTypeMembers)
+				typeDecl.Attributes.Clear();
+
 			foreach (var member in typeDecl.Members.ToList().Where(member => !PruneOwnedTypeMember(member, selectedTokens, preserveOwnedTypeMembers)))
 				member.Remove();
 
