@@ -1320,12 +1320,13 @@ namespace ICSharpCode.Decompiler.CSharp
 				if (selectedHandles.Count == 0)
 					continue;
 
-				var slice = SliceSyntaxTree(
+			var slice = SliceSyntaxTree(
 					cacheEntry.CreateClone(),
 					selectedHandles,
 					requests.Count > 1,
 					preserveSharedTypeMembers,
-					request.TypeDeclarationHandles.Count > 0);
+					request.TypeDeclarationHandles.Count > 0,
+					request.MemberHandles.Count == 0);
 				if (slice != null)
 				{
 					result.Add(new DecompiledDocumentSlice(request.DocumentPath, slice, selectedHandles.ToList()));
@@ -1598,10 +1599,10 @@ namespace ICSharpCode.Decompiler.CSharp
 			return SliceSyntaxTree(tree, selectedTokens, forcePartial, preserveSharedTypeMembers, preserveSharedTypeMembers);
 		}
 
-		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool forcePartial, bool preserveSharedTypeMembers, bool ownsTypeDeclaration)
+		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool forcePartial, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, bool preserveOwnedTypeMembers = true)
 		{
 			bool rootTypeHandled = false;
-			foreach (var member in tree.Members.ToList().Where(member => !PruneTopLevelNode(member, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, ref rootTypeHandled)))
+			foreach (var member in tree.Members.ToList().Where(member => !PruneTopLevelNode(member, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, preserveOwnedTypeMembers, ref rootTypeHandled)))
 				member.Remove();
 
 			if (tree.Members.Count == 0)
@@ -1613,32 +1614,32 @@ namespace ICSharpCode.Decompiler.CSharp
 			return tree;
 		}
 
-		static bool PruneTopLevelNode(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, ref bool rootTypeHandled)
+		static bool PruneTopLevelNode(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, bool preserveOwnedTypeMembers, ref bool rootTypeHandled)
 		{
 			switch (node)
 			{
 				case NamespaceDeclaration ns:
 					foreach (var member in ns.Members.ToList())
 					{
-						if (!PruneNamespaceMember(member, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, ref rootTypeHandled))
+						if (!PruneNamespaceMember(member, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, preserveOwnedTypeMembers, ref rootTypeHandled))
 							member.Remove();
 					}
 					return ns.Members.Count > 0;
 				case TypeDeclaration typeDecl:
-					return PruneRootType(typeDecl, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, ref rootTypeHandled);
+					return PruneRootType(typeDecl, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, preserveOwnedTypeMembers, ref rootTypeHandled);
 				default:
 					return PruneNode(node, selectedTokens, preserveSharedTypeMembers);
 			}
 		}
 
-		static bool PruneNamespaceMember(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, ref bool rootTypeHandled)
+		static bool PruneNamespaceMember(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, bool preserveOwnedTypeMembers, ref bool rootTypeHandled)
 		{
 			return node is TypeDeclaration typeDecl
-				? PruneRootType(typeDecl, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, ref rootTypeHandled)
+				? PruneRootType(typeDecl, selectedTokens, preserveSharedTypeMembers, ownsTypeDeclaration, preserveOwnedTypeMembers, ref rootTypeHandled)
 				: PruneNode(node, selectedTokens, preserveSharedTypeMembers);
 		}
 
-		static bool PruneRootType(TypeDeclaration typeDecl, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, ref bool rootTypeHandled)
+		static bool PruneRootType(TypeDeclaration typeDecl, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, bool preserveOwnedTypeMembers, ref bool rootTypeHandled)
 		{
 			if (rootTypeHandled)
 				return PruneNode(typeDecl, selectedTokens, preserveSharedTypeMembers);
@@ -1647,23 +1648,23 @@ namespace ICSharpCode.Decompiler.CSharp
 			if (!ownsTypeDeclaration)
 				return PruneNode(typeDecl, selectedTokens, preserveSharedTypeMembers);
 
-			foreach (var member in typeDecl.Members.ToList().Where(member => !PruneOwnedTypeMember(member, selectedTokens)))
+			foreach (var member in typeDecl.Members.ToList().Where(member => !PruneOwnedTypeMember(member, selectedTokens, preserveOwnedTypeMembers)))
 				member.Remove();
 
 			return true;
 		}
 
-		static bool PruneOwnedTypeMember(AstNode node, HashSet<EntityHandle> selectedTokens)
+		static bool PruneOwnedTypeMember(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveOwnedTypeMembers)
 		{
 			if (node is TypeDeclaration nestedType)
-				return PruneNode(nestedType, selectedTokens, false);
+				return preserveOwnedTypeMembers || HasSelectedDeclaration(nestedType, selectedTokens);
 
 			if (node is not EntityDeclaration entity)
 				return false;
 
 			return HasSelectedDeclaration(entity, selectedTokens)
-				|| !IsMethodLikeMember(entity)
-				|| IsBaseApiSurfaceMember(entity);
+				|| preserveOwnedTypeMembers && !IsMethodLikeMember(entity)
+				|| !preserveOwnedTypeMembers && IsDeclarationOnlyApiSurfaceMember(entity);
 		}
 
 		static bool PruneNode(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveSharedTypeMembers)
@@ -1675,14 +1676,23 @@ namespace ICSharpCode.Decompiler.CSharp
 						member.Remove();
 					return ns.Members.Count > 0;
 				case TypeDeclaration typeDecl:
-					foreach (var member in typeDecl.Members.ToList().Where(member => !PruneNode(member, selectedTokens, preserveSharedTypeMembers)))
+					bool typeHasSelectedDeclaration = HasSelectedDeclaration(typeDecl, selectedTokens);
+					foreach (var member in typeDecl.Members.ToList().Where(member => !PruneNode(member, selectedTokens, preserveSharedTypeMembers) && !ShouldPreserveTypeApiSurfaceMember(member, typeHasSelectedDeclaration)))
 						member.Remove();
-					return typeDecl.Members.Count > 0 || HasSelectedDeclaration(typeDecl, selectedTokens) || preserveSharedTypeMembers;
+					return typeDecl.Members.Count > 0 || typeHasSelectedDeclaration || preserveSharedTypeMembers;
 				case EntityDeclaration entity:
 					return HasSelectedDeclaration(entity, selectedTokens) || preserveSharedTypeMembers && IsSharedTypeLevelMember(entity);
 				default:
 					return false;
 			}
+		}
+
+		static bool ShouldPreserveTypeApiSurfaceMember(AstNode member, bool typeHasSelectedDeclaration)
+		{
+			return typeHasSelectedDeclaration
+				&& member is EntityDeclaration entity
+				&& IsMethodLikeMember(entity)
+				&& IsDeclarationOnlyApiSurfaceMember(entity);
 		}
 
 		static bool HasSelectedDeclaration(AstNode node, HashSet<EntityHandle> selectedTokens)
@@ -1731,12 +1741,9 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 		}
 
-		static bool IsBaseApiSurfaceMember(EntityDeclaration entity)
+		static bool IsDeclarationOnlyApiSurfaceMember(EntityDeclaration entity)
 		{
-			if ((entity.Modifiers & Modifiers.Abstract) != 0
-				|| (entity.Modifiers & Modifiers.Virtual) != 0
-				|| (entity.Modifiers & Modifiers.Override) != 0
-				|| (entity.Modifiers & Modifiers.Extern) != 0)
+			if ((entity.Modifiers & Modifiers.Abstract) != 0 || (entity.Modifiers & Modifiers.Extern) != 0)
 				return true;
 
 			switch (entity)
