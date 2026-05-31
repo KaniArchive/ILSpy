@@ -1660,7 +1660,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		static bool PruneOwnedTypeMember(AstNode node, HashSet<EntityHandle> selectedTokens, bool preserveOwnedTypeMembers)
 		{
 			if (node is TypeDeclaration nestedType)
-				return preserveOwnedTypeMembers || HasSelectedDeclaration(nestedType, selectedTokens);
+				return HasSelectedDeclaration(nestedType, selectedTokens);
 
 			if (node is not EntityDeclaration entity)
 				return false;
