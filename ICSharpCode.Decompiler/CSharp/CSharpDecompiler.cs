@@ -1757,6 +1757,9 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			switch (node)
 			{
+				case UsingDeclaration:
+				case UsingAliasDeclaration:
+					return true;
 				case NamespaceDeclaration ns:
 					foreach (var member in ns.Members.ToList())
 					{
