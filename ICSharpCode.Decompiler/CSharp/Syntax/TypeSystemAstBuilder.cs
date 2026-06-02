@@ -540,7 +540,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				}
 			}
 
-			if (AlwaysUseShortTypeNames || (typeDef == null && genericType.DeclaringType == null))
+			if (AlwaysUseShortTypeNames && genericType.DeclaringType == null || typeDef == null && genericType.DeclaringType == null)
 			{
 				var shortResult = MakeSimpleType(genericType.Name);
 				AddTypeArguments(shortResult, genericType.TypeParameters, typeArguments, outerTypeParameterCount, genericType.TypeParameterCount);
