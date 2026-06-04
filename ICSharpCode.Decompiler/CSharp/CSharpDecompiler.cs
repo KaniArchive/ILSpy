@@ -1301,6 +1301,17 @@ namespace ICSharpCode.Decompiler.CSharp
 			{
 				var selectedHandles = new HashSet<EntityHandle>(request.MemberHandles);
 				selectedHandles.UnionWith(request.TypeDeclarationHandles);
+				if (request.TypeDeclarationHandles.Count > 0)
+				{
+					foreach (var pair in membersByDocument)
+					{
+						if (!DocumentPathsMatch(pair.Key, request.DocumentPath, requests))
+							continue;
+						foreach (var handle in pair.Value)
+							if (handle.Kind != HandleKind.MethodDefinition)
+								selectedHandles.Add(handle);
+					}
+				}
 				if (selectedHandles.Count == 0)
 				{
 					var matchedDocument = membersByDocument.Keys.FirstOrDefault(path => DocumentPathsMatch(path, request.DocumentPath, requests));
@@ -1346,7 +1357,9 @@ namespace ICSharpCode.Decompiler.CSharp
 
 					selectedHandles.Remove(handle);
 					if (owner.DocumentPath != null
-						&& DocumentPathsMatch(owner.DocumentPath, request.DocumentPath, requests)
+						&& (DocumentPathsMatch(owner.DocumentPath, request.DocumentPath, requests)
+							|| IsGeneratedPath(owner.DocumentPath)
+								&& string.Equals(request.DocumentPath, carrierDocument, StringComparison.OrdinalIgnoreCase))
 						&& (!NonMethodMemberHasRequestedTypeDeclarationOwner(owner.MemberHandle)
 							|| string.Equals(request.DocumentPath, carrierDocument, StringComparison.OrdinalIgnoreCase)))
 						selectedHandles.Add(owner.MemberHandle);
