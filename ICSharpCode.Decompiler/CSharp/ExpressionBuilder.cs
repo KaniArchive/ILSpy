@@ -2464,6 +2464,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 
 			bool isLambda = false;
+			bool useImplicitLambdaParameterTypes = false;
 			if (ame.Parameters.Any(p => p.Type.IsNull))
 			{
 				// if there is an anonymous type involved, we are forced to use a lambda expression.
@@ -2478,6 +2479,11 @@ namespace ICSharpCode.Decompiler.CSharp
 			{
 				// otherwise use lambda only if an expression lambda is possible
 				isLambda = (body.Statements.Count == 1 && body.Statements.Single() is ReturnStatement);
+				if (!isLambda && !ContainsNamedTupleType(function.Parameters.Select(p => p.Type)))
+				{
+					isLambda = true;
+					useImplicitLambdaParameterTypes = true;
+				}
 			}
 			// Remove the parameter list from an AnonymousMethodExpression if the parameters are not used in the method body
 			var parameterReferencingIdentifiers =
@@ -2499,6 +2505,13 @@ namespace ICSharpCode.Decompiler.CSharp
 				lambda.Attributes.AddRange(attributeSections);
 				lambda.IsAsync = ame.IsAsync;
 				lambda.CopyAnnotationsFrom(ame);
+				if (useImplicitLambdaParameterTypes)
+				{
+					foreach (var parameter in ame.Parameters)
+					{
+						parameter.Type = null;
+					}
+				}
 				ame.Parameters.MoveTo(lambda.Parameters);
 				if (body.Statements.Count == 1 && body.Statements.Single() is ReturnStatement returnStmt)
 				{
@@ -2532,6 +2545,18 @@ namespace ICSharpCode.Decompiler.CSharp
 			TranslatedExpression translatedLambda = replacement.WithILInstruction(function).WithRR(rr);
 			return new CastExpression(ConvertType(delegateType), translatedLambda)
 				.WithRR(new ConversionResolveResult(delegateType, rr, LambdaConversion.Instance));
+		}
+
+		static bool ContainsNamedTupleType(IEnumerable<IType> types)
+		{
+			return types.Any(ContainsNamedTupleType);
+		}
+
+		static bool ContainsNamedTupleType(IType type)
+		{
+			if (type is TupleType tupleType && tupleType.ElementNames.Any(name => name != null))
+				return true;
+			return type.TypeArguments.Any(ContainsNamedTupleType);
 		}
 
 		protected internal override TranslatedExpression VisitILFunction(ILFunction function, TranslationContext context)

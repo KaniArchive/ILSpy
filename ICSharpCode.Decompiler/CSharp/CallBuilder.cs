@@ -57,6 +57,43 @@ namespace ICSharpCode.Decompiler.CSharp
 			public bool IsExpandedForm;
 			public int Length => Arguments.Length;
 
+			public bool TryUsePositionalParameterOrder()
+			{
+				if (ArgumentNames == null || ArgumentToParameterMap == null || ArgumentToParameterMap.Count != Arguments.Length)
+					return false;
+				if (FirstOptionalArgumentIndex >= 0)
+					return false;
+
+				var usedParameterIndices = new bool[Arguments.Length];
+				for (int i = 0; i < ArgumentToParameterMap.Count; i++)
+				{
+					int parameterIndex = ArgumentToParameterMap[i];
+					if (parameterIndex < 0 || parameterIndex >= Arguments.Length || usedParameterIndices[parameterIndex])
+						return false;
+					usedParameterIndices[parameterIndex] = true;
+				}
+
+				var arguments = new TranslatedExpression[Arguments.Length];
+				var expectedParameters = new IParameter[ExpectedParameters.Length];
+				var primitiveValues = new BitSet(Arguments.Length);
+				for (int i = 0; i < ArgumentToParameterMap.Count; i++)
+				{
+					int parameterIndex = ArgumentToParameterMap[i];
+					arguments[parameterIndex] = Arguments[i];
+					expectedParameters[parameterIndex] = ExpectedParameters[i];
+					if (IsPrimitiveValue[i])
+						primitiveValues.Set(parameterIndex);
+				}
+
+				Arguments = arguments;
+				ExpectedParameters = expectedParameters;
+				ParameterNames = expectedParameters.SelectArray(p => p.Name);
+				ArgumentNames = null;
+				ArgumentToParameterMap = null;
+				IsPrimitiveValue = primitiveValues;
+				return true;
+			}
+
 			private int GetActualArgumentCount()
 			{
 				if (FirstOptionalArgumentIndex < 0)
@@ -1287,6 +1324,9 @@ namespace ICSharpCode.Decompiler.CSharp
 						else if (argumentList.FirstOptionalArgumentIndex >= 0)
 						{
 							argumentList.FirstOptionalArgumentIndex = -1;
+						}
+						else if (argumentList.TryUsePositionalParameterOrder())
+						{
 						}
 						else if (!argumentsCasted)
 						{

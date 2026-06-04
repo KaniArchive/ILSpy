@@ -221,7 +221,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (invocation == null)
 				return null;
 			MemberReferenceExpression mre = invocation.Target as MemberReferenceExpression;
-			if (mre == null || IsNullConditional(mre.Target))
+			if (mre == null || IsNullConditional(mre.Target) || IsNullableSourceConsumedByValueAggregate(invocation, mre.Target))
 				return null;
 			switch (mre.MemberName)
 			{
@@ -282,7 +282,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					var fromExpressionLambda = invocation.Arguments.ElementAt(0);
 					if (!MatchSimpleLambda(fromExpressionLambda, out ParameterDeclaration parameter, out Expression collectionSelector))
 						return null;
-					if (IsNullConditional(collectionSelector))
+					if (ContainsNullConditional(collectionSelector))
 						return null;
 					LambdaExpression lambda = invocation.Arguments.ElementAt(1) as LambdaExpression;
 					if (lambda != null && lambda.Parameters.Count == 2 && lambda.Body is Expression)
@@ -367,7 +367,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						return null;
 					Expression source1 = mre.Target;
 					Expression source2 = invocation.Arguments.ElementAt(0);
-					if (IsNullConditional(source2))
+					if (ContainsNullConditional(source2))
 						return null;
 					Expression outerLambda = invocation.Arguments.ElementAt(1);
 					if (!MatchSimpleLambda(outerLambda, out ParameterDeclaration element1, out Expression key1))
@@ -448,6 +448,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			return target is UnaryOperatorExpression uoe && uoe.Operator == UnaryOperatorType.NullConditional;
 		}
 
+		bool ContainsNullConditional(Expression target)
+		{
+			return IsNullConditional(target)
+				|| target.Descendants.OfType<UnaryOperatorExpression>().Any(uoe => uoe.Operator == UnaryOperatorType.NullConditional);
+		}
+
+		bool IsNullableSourceConsumedByValueAggregate(InvocationExpression invocation, Expression source)
+		{
+			if (!ContainsNullConditional(source))
+				return false;
+			if (invocation.Parent is not MemberReferenceExpression { Parent: InvocationExpression aggregateInvocation } aggregateMember
+				|| aggregateMember.Target != invocation)
+			{
+				return false;
+			}
+			return aggregateMember.MemberName is "Sum" or "Average" or "Min" or "Max" or "Count" or "LongCount"
+				&& NullableType.IsNonNullableValueType(aggregateInvocation.GetResolveResult().Type);
+		}
+
 		/// <summary>
 		/// This fixes #437: Decompilation of query expression loses material parentheses
 		/// We wrap the expression in parentheses if:
@@ -476,7 +495,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				return false;
 
 			if (mre.MemberName == "OrderBy" || mre.MemberName == "OrderByDescending")
-				return !IsNullConditional(mre.Target);
+				return !ContainsNullConditional(mre.Target);
 			else if (mre.MemberName == "ThenBy" || mre.MemberName == "ThenByDescending")
 				return ValidateThenByChain(mre.Target as InvocationExpression, expectedParameterName);
 			else
