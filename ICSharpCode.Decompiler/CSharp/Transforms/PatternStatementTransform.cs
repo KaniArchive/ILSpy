@@ -141,6 +141,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		{
 			return TransformTryCatchFinally(tryCatchStatement) ?? base.VisitTryCatchStatement(tryCatchStatement);
 		}
+
 		#endregion
 
 		/// <summary>
@@ -1235,8 +1236,21 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (!(usingStatement.ResourceAcquisition is VariableDeclarationStatement))
 				return usingStatement;
 
+			if (HasLabelOrGotoInAncestorBlock(usingStatement))
+				return usingStatement;
+
 			usingStatement.IsEnhanced = true;
 			return usingStatement;
+		}
+
+		static bool HasLabelOrGotoInAncestorBlock(UsingStatement usingStatement)
+		{
+			foreach (var block in usingStatement.Ancestors.OfType<BlockStatement>())
+			{
+				if (block.Statements.Any(statement => statement is LabelStatement or GotoStatement))
+					return true;
+			}
+			return false;
 		}
 		#endregion
 	}

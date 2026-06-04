@@ -462,11 +462,11 @@ namespace ICSharpCode.Decompiler.CSharp
 					if (v.StoreCount > 1 || v.LoadCount > 0 || v.AddressCount > 0)
 					{
 						catchClause.VariableName = v.Name;
-						catchClause.Type = exprBuilder.ConvertType(v.Type);
+						catchClause.Type = exprBuilder.ConvertType(GetCatchType(v.Type));
 					}
 					else if (!v.Type.IsKnownType(KnownTypeCode.Object))
 					{
-						catchClause.Type = exprBuilder.ConvertType(v.Type);
+						catchClause.Type = exprBuilder.ConvertType(GetCatchType(v.Type));
 					}
 				}
 				if (!handler.Filter.MatchLdcI4(1))
@@ -475,6 +475,13 @@ namespace ICSharpCode.Decompiler.CSharp
 				tryCatch.CatchClauses.Add(catchClause);
 			}
 			return tryCatch.WithILInstruction(inst);
+		}
+
+		IType GetCatchType(IType type)
+		{
+			return type.GetAllBaseTypes().Any(t => t.IsKnownType(KnownTypeCode.Exception))
+				? type
+				: typeSystem.FindType(KnownTypeCode.Exception);
 		}
 
 		protected internal override TranslatedStatement VisitTryFinally(TryFinally inst)

@@ -80,6 +80,12 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			InsertBlock(lockStatement.EmbeddedStatement);
 		}
 
+		public override void VisitBlockStatement(BlockStatement blockStatement)
+		{
+			base.VisitBlockStatement(blockStatement);
+			TransformUnassignedGotoStateDispatch(blockStatement);
+		}
+
 		public override void VisitUsingStatement(UsingStatement usingStatement)
 		{
 			base.VisitUsingStatement(usingStatement);
@@ -154,6 +160,88 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				default:
 					return !(parent?.Parent is IfElseStatement);
 			}
+		}
+
+		static void TransformUnassignedGotoStateDispatch(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			for (int i = 0; i + 2 < statements.Count; i++)
+			{
+				if (statements[i] is not LabelStatement label)
+					continue;
+				if (statements[i + 1] is not VariableDeclarationStatement { Variables.Count: 1 } declaration)
+					continue;
+				string stateVariable = declaration.Variables.Single().Name;
+				if (statements[i + 2] is not IfElseStatement ifStatement)
+					continue;
+				if (!IsStateReturnCheck(ifStatement, stateVariable, out var returnExpression))
+					continue;
+
+				var gotos = blockStatement.Descendants
+					.OfType<GotoStatement>()
+					.Where(gotoStatement => gotoStatement.Label == label.Label)
+					.ToList();
+				if (gotos.Count == 0)
+					continue;
+				foreach (var gotoStatement in gotos)
+				{
+					ReplaceStateGoto(gotoStatement, returnExpression);
+				}
+				statements[i].Remove();
+				statements[i + 1].Remove();
+				statements[i + 2].Remove();
+				if (i < statements.Count - 3 && IsNullAssignmentTo(statements[i + 3], returnExpression))
+					statements[i + 3].Remove();
+				return;
+			}
+		}
+
+		static bool IsStateReturnCheck(IfElseStatement ifStatement, string stateVariable, out Expression returnExpression)
+		{
+			returnExpression = null;
+			if (ifStatement.Condition is not BinaryOperatorExpression { Operator: BinaryOperatorType.Equality } condition)
+				return false;
+			if (condition.Left is not IdentifierExpression identifier || identifier.Identifier != stateVariable)
+				return false;
+			if (condition.Right is not PrimitiveExpression { Value: int })
+				return false;
+			Statement trueStatement = ifStatement.TrueStatement;
+			if (trueStatement is BlockStatement { Statements.Count: 1 } block)
+				trueStatement = block.Statements.Single();
+			if (trueStatement is not ReturnStatement returnStatement || returnStatement.Expression.IsNull)
+				return false;
+			returnExpression = returnStatement.Expression;
+			return true;
+		}
+
+		static bool IsNullAssignmentTo(Statement statement, Expression returnExpression)
+		{
+			if (returnExpression is not IdentifierExpression returnIdentifier)
+				return false;
+			return statement is ExpressionStatement {
+				Expression: AssignmentExpression {
+					Left: IdentifierExpression assignedIdentifier,
+					Right: NullReferenceExpression
+				}
+			} && assignedIdentifier.Identifier == returnIdentifier.Identifier;
+		}
+
+		static void ReplaceStateGoto(GotoStatement gotoStatement, Expression returnExpression)
+		{
+			if (returnExpression is IdentifierExpression returnIdentifier
+				&& gotoStatement.PrevSibling is ExpressionStatement {
+					Expression: AssignmentExpression {
+						Left: IdentifierExpression assignedIdentifier,
+						Right: var assignedValue
+					}
+				} assignmentStatement
+				&& assignedIdentifier.Identifier == returnIdentifier.Identifier)
+			{
+				assignmentStatement.ReplaceWith(new ReturnStatement(assignedValue.Detach()).CopyAnnotationsFrom(gotoStatement));
+				gotoStatement.Remove();
+				return;
+			}
+			gotoStatement.ReplaceWith(new ContinueStatement().CopyAnnotationsFrom(gotoStatement));
 		}
 
 		void IAstTransform.Run(AstNode rootNode, TransformContext context)
