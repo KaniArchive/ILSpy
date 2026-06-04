@@ -574,10 +574,49 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 
 			if ((transform & CallTransformation.RequireTypeArguments) != 0 && (!settings.AnonymousTypes || !method.TypeArguments.Any(a => a.ContainsAnonymousType())))
-				typeArgumentList.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
+				typeArgumentList.AddRange(GetTypeArgumentsWithTupleNames(method.TypeArguments, argumentList).Select(expressionBuilder.ConvertType));
 			return new InvocationExpression(targetExpr, argumentList.GetArgumentExpressions())
 				.WithRR(new CSharpInvocationResolveResult(target.ResolveResult, foundMethod,
 					argumentList.GetArgumentResolveResultsDirect(), isExpandedForm: argumentList.IsExpandedForm));
+		}
+
+		private static IEnumerable<IType> GetTypeArgumentsWithTupleNames(IReadOnlyList<IType> typeArguments, ArgumentList argumentList)
+		{
+			foreach (var typeArgument in typeArguments)
+			{
+				yield return FindNamedTupleType(typeArgument, argumentList.Arguments) ?? typeArgument;
+			}
+		}
+
+		private static IType FindNamedTupleType(IType type, IEnumerable<TranslatedExpression> arguments)
+		{
+			foreach (var argument in arguments)
+			{
+				foreach (var candidate in GetTypes(argument.Expression))
+				{
+					if (candidate is TupleType tupleType
+						&& tupleType.ElementNames.Any(name => name != null)
+						&& NormalizeTypeVisitor.TypeErasure.EquivalentTypes(tupleType, type))
+					{
+						return tupleType;
+					}
+				}
+			}
+			return null;
+
+			static IEnumerable<IType> GetTypes(Expression expression)
+			{
+				if (expression.GetResolveResult() is { Type: { } expressionType })
+					yield return expressionType;
+				if (expression is LambdaExpression lambda)
+				{
+					foreach (var parameter in lambda.Parameters)
+					{
+						if (parameter.Type.GetResolveResult() is TypeResolveResult { Type: { } parameterType })
+							yield return parameterType;
+					}
+				}
+			}
 		}
 
 		private ExpressionWithResolveResult HandleStringInterpolation(IMethod method, ArgumentList argumentList)

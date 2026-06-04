@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 
+using ICSharpCode.Decompiler.CSharp.Resolver;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.IL.Transforms;
@@ -644,7 +645,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					}
 					else
 					{
-						type = context.TypeSystemAstBuilder.ConvertType(v.Type);
+						type = context.TypeSystemAstBuilder.ConvertType(GetOutVariableType(v.Type, dirExpr));
 					}
 					string name;
 					// Variable is not used and discards are allowed, we can simplify this to 'out T _'.
@@ -819,6 +820,45 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				node.RemoveAnnotations<ILVariableResolveResult>();
 				node.AddAnnotation(new ILVariableResolveResult(v.ILVariable, v.Type));
 			}
+		}
+
+		static IType GetOutVariableType(IType variableType, DirectionExpression dirExpr)
+		{
+			if (GetOutParameterType(dirExpr) is not { } parameterType)
+				return variableType;
+			if (ContainsNamedTupleType(parameterType) && NormalizeTypeVisitor.TypeErasure.EquivalentTypes(parameterType, variableType))
+				return parameterType;
+			return variableType;
+		}
+
+		static IType GetOutParameterType(DirectionExpression dirExpr)
+		{
+			if (dirExpr.Parent is not InvocationExpression invocation
+				|| invocation.GetResolveResult() is not CSharpInvocationResolveResult invocationResolveResult)
+				return null;
+
+			var argumentIndex = invocation.Arguments.TakeWhile(argument => argument != dirExpr).Count();
+			var argumentMap = invocationResolveResult.GetArgumentToParameterMap();
+			if (argumentMap is not null && argumentIndex >= argumentMap.Count)
+				return null;
+			var parameterIndex = argumentMap is null ? argumentIndex : argumentMap[argumentIndex];
+			if (parameterIndex < 0 || parameterIndex >= invocationResolveResult.Member.Parameters.Count)
+				return null;
+
+			var parameterType = invocationResolveResult.Member.Parameters[parameterIndex].Type;
+			return parameterType is ByReferenceType byReferenceType ? byReferenceType.ElementType : parameterType;
+		}
+
+		static bool ContainsNamedTupleType(IType type)
+		{
+			if (type is TupleType tupleType && tupleType.ElementNames.Any(name => name != null))
+				return true;
+			foreach (var typeArgument in type.TypeArguments)
+			{
+				if (ContainsNamedTupleType(typeArgument))
+					return true;
+			}
+			return false;
 		}
 	}
 }
