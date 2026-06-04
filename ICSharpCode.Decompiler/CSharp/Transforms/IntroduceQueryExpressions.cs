@@ -17,10 +17,14 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.IL;
+using ICSharpCode.Decompiler.Semantics;
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
 {
@@ -67,7 +71,101 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					fromClause = innerFromClause;
 					innerQuery = fromClause.Expression as QueryExpression;
 				}
+				PreserveNamedTupleElementTypes(fromClause);
 			}
+		}
+
+		private void PreserveNamedTupleElementTypes(QueryFromClause fromClause)
+		{
+			if (GetVariableResolveResult(fromClause) is not { Variable: var rangeVariable, Type: { } rangeVariableType })
+				return;
+			if (fromClause.Expression is not IdentifierExpression sourceIdentifier
+				|| GetVariableResolveResult(sourceIdentifier) is not { Variable: var sourceVariable })
+				return;
+			var tupleType = GetNamedTupleType(fromClause.Parent, rangeVariable, rangeVariableType);
+			if (tupleType == null)
+				return;
+
+			foreach (var declaration in fromClause.Ancestors.OfType<BlockStatement>().FirstOrDefault()?.Statements.OfType<VariableDeclarationStatement>() ?? Enumerable.Empty<VariableDeclarationStatement>())
+			{
+				if (declaration.Variables.Count != 1)
+					continue;
+				var variable = declaration.Variables.Single();
+				if (variable.Name != sourceVariable.Name
+					|| variable.Annotation<ILVariableResolveResult>()?.Variable != sourceVariable)
+					continue;
+				if (!TryReplaceTupleTypeArgument(declaration.Type, tupleType))
+					return;
+				variable.RemoveAnnotations<ILVariableResolveResult>();
+				variable.AddAnnotation(new ILVariableResolveResult(sourceVariable, declaration.Type.GetResolveResult().Type));
+				return;
+			}
+		}
+
+		private TupleType GetNamedTupleType(AstNode query, ILVariable rangeVariable, IType rangeVariableType)
+		{
+			if (rangeVariableType is TupleType tupleType && ContainsNamedTupleType(tupleType))
+				return tupleType;
+			if (!TupleType.IsTupleCompatible(rangeVariableType, out var tupleCardinality))
+				return null;
+
+			var elementNames = new string[tupleCardinality];
+			foreach (var memberReference in query.Descendants.OfType<MemberReferenceExpression>())
+			{
+				if (GetVariableResolveResult(memberReference.Target)?.Variable != rangeVariable)
+					continue;
+				if (memberReference.GetResolveResult() is not MemberResolveResult { Member: IField field })
+					continue;
+				if (!field.Name.StartsWith("Item", StringComparison.Ordinal)
+					|| !int.TryParse(field.Name.Substring("Item".Length), out var position)
+					|| position < 1
+					|| position > tupleCardinality)
+					continue;
+				if (memberReference.MemberName == field.Name)
+					continue;
+				elementNames[position - 1] = memberReference.MemberName;
+			}
+			if (elementNames.All(name => name == null))
+				return null;
+
+			var elementTypes = TupleType.GetTupleElementTypes(rangeVariableType);
+			if (elementTypes.Length != tupleCardinality)
+				return null;
+			return new TupleType(context.TypeSystem, elementTypes, elementNames.ToImmutableArray(), rangeVariableType.GetDefinition()?.ParentModule);
+		}
+
+		private static ILVariableResolveResult GetVariableResolveResult(AstNode node)
+		{
+			return node.Annotation<ILVariableResolveResult>() ?? node.Annotation<ResolveResult>() as ILVariableResolveResult;
+		}
+
+		private bool TryReplaceTupleTypeArgument(AstType type, TupleType tupleType)
+		{
+			foreach (var typeArgument in type.GetChildrenByRole(Roles.TypeArgument))
+			{
+				if (typeArgument.GetResolveResult() is TypeResolveResult { Type: { } argumentType }
+					&& NormalizeTypeVisitor.TypeErasure.EquivalentTypes(argumentType, tupleType))
+				{
+					var replacement = context.TypeSystemAstBuilder.ConvertType(tupleType);
+					typeArgument.ReplaceWith(replacement);
+					return true;
+				}
+				if (TryReplaceTupleTypeArgument(typeArgument, tupleType))
+					return true;
+			}
+			return false;
+		}
+
+		private static bool ContainsNamedTupleType(IType type)
+		{
+			if (type is TupleType tupleType && tupleType.ElementNames.Any(name => name != null))
+				return true;
+			foreach (var typeArgument in type.TypeArguments)
+			{
+				if (ContainsNamedTupleType(typeArgument))
+					return true;
+			}
+			return false;
 		}
 
 		private void CombineRangeVariables(QueryClause clause, ILVariable oldVariable, ILVariable newVariable)
