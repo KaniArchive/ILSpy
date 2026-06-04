@@ -97,6 +97,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			Expression query = DecompileQuery(node as InvocationExpression);
 			if (query != null)
 			{
+				query.CopyAnnotationsFrom(node);
 				if (node.Parent is ExpressionStatement && CanUseDiscardAssignment())
 					query = new AssignmentExpression(new IdentifierExpression("_"), query);
 				node.ReplaceWith(query);
