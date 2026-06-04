@@ -2479,7 +2479,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			{
 				// otherwise use lambda only if an expression lambda is possible
 				isLambda = (body.Statements.Count == 1 && body.Statements.Single() is ReturnStatement);
-				if (!isLambda && !ContainsNamedTupleType(function.Parameters.Select(p => p.Type)))
+				if (!isLambda && function.Parameters.Count > 1 && !ContainsNamedTupleType(function.Parameters.Select(p => p.Type)))
 				{
 					isLambda = true;
 					useImplicitLambdaParameterTypes = true;
