@@ -204,7 +204,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		#region EnsureExpressionStatementsAreValid
 		void EnsureExpressionStatementsAreValid(AstNode rootNode)
 		{
-			foreach (var stmt in rootNode.DescendantsAndSelf.OfType<ExpressionStatement>())
+			foreach (var stmt in rootNode.DescendantsAndSelf.OfType<ExpressionStatement>().ToList())
 			{
 				if (stmt.Expression is DirectionExpression dir && IsValidInStatementExpression(dir.Expression))
 				{
@@ -212,6 +212,11 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				}
 				else if (!IsValidInStatementExpression(stmt.Expression))
 				{
+					if (IsPureExpressionStatement(stmt.Expression))
+					{
+						stmt.Remove();
+						continue;
+					}
 					// fetch ILFunction
 					var function = stmt.Ancestors.SelectMany(a => a.Annotations.OfType<ILFunction>()).First(f => f.Parent == null);
 					// if possible use C# 7.0 discard-assignment
@@ -239,6 +244,14 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					}
 				}
 			}
+		}
+
+		static bool IsPureExpressionStatement(Expression expression)
+		{
+			var instructions = expression.DescendantsAndSelf
+				.SelectMany(node => node.Annotations.OfType<ILInstruction>())
+				.ToList();
+			return instructions.Count > 0 && instructions.All(inst => SemanticHelper.IsPure(inst.Flags));
 		}
 
 		private static bool IsValidInStatementExpression(Expression expr)
