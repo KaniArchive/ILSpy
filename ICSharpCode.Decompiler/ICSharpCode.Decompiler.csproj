@@ -131,6 +131,7 @@
     <Compile Include="CSharp\ProjectDecompiler\ProjectFileWriterDefault.cs" />
     <Compile Include="CSharp\ProjectDecompiler\ProjectReferenceInfo.cs" />
     <Compile Include="CSharp\ProjectDecompiler\RecoveredProjectFileBuilder.cs" />
+    <Compile Include="CSharp\ProjectDecompiler\RecoveredSolutionFileBuilder.cs" />
     <Compile Include="CSharp\RecordDecompiler.cs" />
     <Compile Include="CSharp\RequiredNamespaceCollector.cs" />
     <Compile Include="CSharp\SequencePointBuilder.cs" />
