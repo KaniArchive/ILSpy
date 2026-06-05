@@ -14,6 +14,7 @@ public class RecoveredProjectFileBuilder(
 	string projectName,
 	List<ProjectReferenceInfo> knownProjectRefs,
 	string overrideCsVersion = null,
+	string overrideTargetFramework = null,
 	IReadOnlyList<string> dependencyDirs = null)
 {
 	public string Build()
@@ -34,7 +35,8 @@ public class RecoveredProjectFileBuilder(
 					resolver,
 					knownProjectRefs,
 					ResolveDependencyHints(),
-					ResolveLanguageVersion()),
+					ResolveLanguageVersion(),
+					NormalizeTargetFrameworkOverride()),
 				Enumerable.Empty<ProjectItemInfo>(),
 				file);
 		}
@@ -98,14 +100,23 @@ public class RecoveredProjectFileBuilder(
 		}
 	}
 
-	private sealed class RecoveredProjectInfo : IProjectInfoProvider, IProjectReferenceInfoProvider, IProjectDependencyHintProvider
+	private string NormalizeTargetFrameworkOverride()
+	{
+		if (string.IsNullOrWhiteSpace(overrideTargetFramework))
+			return null;
+
+		return overrideTargetFramework.Trim();
+	}
+
+	private sealed class RecoveredProjectInfo : IProjectInfoProvider, IProjectReferenceInfoProvider, IProjectDependencyHintProvider, IProjectTargetFrameworkOverrideProvider
 	{
 		public RecoveredProjectInfo(
 			string targetDirectory,
 			UniversalAssemblyResolver resolver,
 			IReadOnlyList<ProjectReferenceInfo> projectReferences,
 			IReadOnlyDictionary<string, string> dependencyHints,
-			LanguageVersion languageVersion)
+			LanguageVersion languageVersion,
+			string targetFrameworkOverride)
 		{
 			TargetDirectory = targetDirectory;
 			AssemblyResolver = resolver;
@@ -113,6 +124,7 @@ public class RecoveredProjectFileBuilder(
 			ProjectReferences = projectReferences;
 			DependencyHints = dependencyHints;
 			LanguageVersion = languageVersion;
+			TargetFrameworkOverride = targetFrameworkOverride;
 		}
 
 		public IAssemblyResolver AssemblyResolver { get; }
@@ -130,6 +142,8 @@ public class RecoveredProjectFileBuilder(
 		public string StrongNameKeyFile => null;
 
 		public IReadOnlyList<ProjectReferenceInfo> ProjectReferences { get; }
+
+		public string TargetFrameworkOverride { get; }
 
 		private IReadOnlyDictionary<string, string> DependencyHints { get; }
 

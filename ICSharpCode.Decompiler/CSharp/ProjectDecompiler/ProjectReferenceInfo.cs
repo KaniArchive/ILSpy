@@ -24,3 +24,8 @@ public interface IProjectDependencyHintProvider
 {
 	bool TryGetDependencyHintPath(string assemblyName, out string hintPath);
 }
+
+public interface IProjectTargetFrameworkOverrideProvider
+{
+	string TargetFrameworkOverride { get; }
+}

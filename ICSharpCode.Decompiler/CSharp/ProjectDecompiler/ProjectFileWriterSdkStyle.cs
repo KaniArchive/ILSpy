@@ -133,12 +133,13 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			if (targetFramework.Identifier == ".NETFramework" && targetFramework.VersionNumber == 200)
 				targetFramework = TargetServices.DetectTargetFrameworkNET20(module, project.AssemblyResolver, targetFramework);
 
-			if (targetFramework.Moniker == null)
+			var targetFrameworkOverride = GetTargetFrameworkOverride(project);
+			if (targetFramework.Moniker == null && targetFrameworkOverride == null)
 			{
 				throw new NotSupportedException($"Cannot decompile this assembly to a SDK style project. Use default project format instead.");
 			}
 
-			xml.WriteElementString("TargetFramework", targetFramework.Moniker);
+			xml.WriteElementString("TargetFramework", targetFrameworkOverride ?? targetFramework.Moniker);
 
 			// 'AnyCPU' is default, so only need to specify platform if it differs
 			if (platformName != AnyCpuString)
@@ -325,6 +326,17 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				reference => reference.AssemblyName,
 				reference => reference,
 				StringComparer.OrdinalIgnoreCase);
+		}
+
+		static string GetTargetFrameworkOverride(IProjectInfoProvider project)
+		{
+			var provider = project as IProjectTargetFrameworkOverrideProvider;
+			if (provider == null)
+				return null;
+
+			return string.IsNullOrWhiteSpace(provider.TargetFrameworkOverride)
+				? null
+				: provider.TargetFrameworkOverride;
 		}
 
 		static string GetSdkString(ProjectType projectType)
