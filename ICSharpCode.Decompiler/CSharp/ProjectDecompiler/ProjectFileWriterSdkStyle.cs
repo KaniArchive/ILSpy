@@ -191,6 +191,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		static void WriteProjectInfo(XmlTextWriter xml, IProjectInfoProvider project)
 		{
 			xml.WriteElementString("LangVersion", project.LanguageVersion.ToString().Replace("CSharp", "").Replace('_', '.'));
+			xml.WriteElementString("ImplicitUsings", "disable");
 			xml.WriteElementString("AllowUnsafeBlocks", TrueString);
 			xml.WriteElementString("CheckForOverflowUnderflow", project.CheckForOverflowUnderflow ? TrueString : FalseString);
 
@@ -268,27 +269,62 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 						targetPacks.Add("Microsoft.AspNetCore.App");
 						targetPacks.Add("Microsoft.AspNetCore.All");
 						break;
-				}
+					}
 			}
+
+			var projectReferences = GetProjectReferences(project);
+			var dependencyHints = project as IProjectDependencyHintProvider;
 
 			foreach (var reference in module.AssemblyReferences.Where(r => !ImplicitReferences.Contains(r.Name)))
 			{
+				if (projectReferences.TryGetValue(reference.Name, out var projectReference))
+				{
+					xml.WriteStartElement("ProjectReference");
+					xml.WriteAttributeString("Include", projectReference.RelativeCsprojPath);
+					xml.WriteEndElement();
+					continue;
+				}
+
+				if (dependencyHints != null && dependencyHints.TryGetDependencyHintPath(reference.Name, out var dependencyHintPath))
+				{
+					WriteReference(xml, reference.Name, FileUtility.GetRelativePath(project.TargetDirectory, dependencyHintPath));
+					continue;
+				}
+
 				if (isNetCoreApp && project.AssemblyReferenceClassifier.IsSharedAssembly(reference, out string runtimePack) && targetPacks.Contains(runtimePack))
 				{
 					continue;
 				}
 
-				xml.WriteStartElement("Reference");
-				xml.WriteAttributeString("Include", reference.Name);
-
 				var asembly = project.AssemblyResolver.Resolve(reference);
-				if (asembly != null && !project.AssemblyReferenceClassifier.IsGacAssembly(reference))
-				{
-					xml.WriteElementString("HintPath", FileUtility.GetRelativePath(project.TargetDirectory, asembly.FileName));
-				}
-
-				xml.WriteEndElement();
+				var hintPath = asembly != null && !project.AssemblyReferenceClassifier.IsGacAssembly(reference)
+					? FileUtility.GetRelativePath(project.TargetDirectory, asembly.FileName)
+					: null;
+				WriteReference(xml, reference.Name, hintPath);
 			}
+		}
+
+		static void WriteReference(XmlTextWriter xml, string assemblyName, string hintPath)
+		{
+			xml.WriteStartElement("Reference");
+			xml.WriteAttributeString("Include", assemblyName);
+
+			if (hintPath != null)
+				xml.WriteElementString("HintPath", hintPath);
+
+			xml.WriteEndElement();
+		}
+
+		static Dictionary<string, ProjectReferenceInfo> GetProjectReferences(IProjectInfoProvider project)
+		{
+			var provider = project as IProjectReferenceInfoProvider;
+			if (provider == null)
+				return new Dictionary<string, ProjectReferenceInfo>(StringComparer.OrdinalIgnoreCase);
+
+			return provider.ProjectReferences.ToDictionary(
+				reference => reference.AssemblyName,
+				reference => reference,
+				StringComparer.OrdinalIgnoreCase);
 		}
 
 		static string GetSdkString(ProjectType projectType)
