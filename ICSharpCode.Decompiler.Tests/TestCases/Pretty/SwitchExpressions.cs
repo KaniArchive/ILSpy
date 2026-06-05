@@ -159,5 +159,34 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				_ => "default",
 			};
 		}
+
+#if !EXPECTED_OUTPUT
+		public static Exception TypePatternReturnLadder(Exception exception)
+		{
+			if (!(exception is ArgumentException exception2))
+			{
+				if (!(exception is InvalidOperationException exception3))
+				{
+					if (exception is NotSupportedException exception4)
+					{
+						return exception4;
+					}
+					return new Exception("fallback", exception);
+				}
+				return exception3;
+			}
+			return exception2;
+		}
+#else
+		public static Exception TypePatternReturnLadder(Exception exception)
+		{
+			return exception switch {
+				ArgumentException e => e,
+				InvalidOperationException e => e,
+				NotSupportedException e => e,
+				_ => new Exception("fallback", exception),
+			};
+		}
+#endif
 	}
 }
