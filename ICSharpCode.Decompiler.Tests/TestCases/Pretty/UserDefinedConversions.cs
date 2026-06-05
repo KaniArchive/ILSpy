@@ -16,6 +16,10 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#if CS120 && !NET40
+using System;
+#endif
+
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
 	internal class T01Issue1574
@@ -131,6 +135,41 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 		}
 	}
+
+#if CS120 && !NET40
+	internal class T03AmbiguousUserDefinedConversionArgument
+	{
+		private readonly struct RedisLikeValue
+		{
+			public static implicit operator string(RedisLikeValue value)
+			{
+				return null;
+			}
+
+			public static implicit operator byte[](RedisLikeValue value)
+			{
+				return null;
+			}
+		}
+
+		private static bool TryParseValue(string value, out long result)
+		{
+			result = 0L;
+			return true;
+		}
+
+		private static bool TryParseValue(ReadOnlySpan<byte> value, out long result)
+		{
+			result = 1L;
+			return true;
+		}
+
+		private static bool CallStringOverload(RedisLikeValue value, out long result)
+		{
+			return TryParseValue((string)value, out result);
+		}
+	}
+#endif
 
 #if CS72
 	internal class T03ConversionWithInArgument

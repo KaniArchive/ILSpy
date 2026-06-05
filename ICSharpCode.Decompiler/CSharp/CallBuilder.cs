@@ -141,7 +141,7 @@ namespace ICSharpCode.Decompiler.CSharp
 					var param = expectedParameters[index];
 					if (useImplicitlyTypedOut && param.ReferenceKind == ReferenceKind.Out && expression.Type is ByReferenceType brt)
 						return new OutVarResolveResult(brt.ElementType);
-					return expression.ResolveResult;
+					return GetVisibleResolveResult(expression);
 				}
 			}
 
@@ -224,6 +224,15 @@ namespace ICSharpCode.Decompiler.CSharp
 		readonly ExpressionBuilder expressionBuilder;
 		readonly CSharpResolver resolver;
 		readonly IDecompilerTypeSystem typeSystem;
+
+		static ResolveResult GetVisibleResolveResult(TranslatedExpression expression)
+		{
+			if (expression.Expression.Annotation<ImplicitConversionAnnotation>() is { ConversionResolveResult: var conversion })
+			{
+				return conversion.Input;
+			}
+			return expression.ResolveResult;
+		}
 
 		public CallBuilder(ExpressionBuilder expressionBuilder, IDecompilerTypeSystem typeSystem, DecompilerSettings settings)
 		{
@@ -1338,6 +1347,10 @@ namespace ICSharpCode.Decompiler.CSharp
 								typeArguments = Empty<IType>.Array;
 								appliedRequireTypeArgumentsShortcut = false;
 							}
+							if (TryCastSingleArgumentForCall(expectedTargetDetails, method, targetResolveResult, typeArguments, argumentList))
+							{
+								continue;
+							}
 							argumentsCasted = true;
 							argumentList.UseImplicitlyTypedOut = false;
 							CastArguments(argumentList.Arguments, argumentList.ExpectedParameters);
@@ -1449,34 +1462,89 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			for (int i = 0; i < arguments.Count; i++)
 			{
-				if (settings.AnonymousTypes && expectedParameters[i].Type.ContainsAnonymousType())
-				{
-					if (arguments[i].Expression is LambdaExpression lambda)
-					{
-						ModifyReturnTypeOfLambda(lambda);
-					}
-				}
-				else
-				{
-					IParameter parameter = expectedParameters[i];
-					IType parameterType;
-					if (parameter.Type.Kind == TypeKind.Dynamic)
-					{
-						parameterType = expressionBuilder.compilation.FindType(KnownTypeCode.Object);
-					}
-					else
-					{
-						parameterType = parameter.Type;
-					}
+				CastArgument(arguments, expectedParameters, i);
+			}
+		}
 
-					if (parameter.ReferenceKind == ReferenceKind.In && parameterType is ByReferenceType brt && arguments[i].Type is not ByReferenceType)
-					{
-						parameterType = brt.ElementType;
-					}
-
-					arguments[i] = arguments[i].ConvertTo(parameterType, expressionBuilder, allowImplicitConversion: false);
+		private bool TryCastSingleArgumentForCall(ExpectedTargetDetails expectedTargetDetails, IMethod method,
+			ResolveResult targetResolveResult, IType[] typeArguments, ArgumentList argumentList)
+		{
+			if (argumentList.Arguments.Length != argumentList.ExpectedParameters.Length)
+				return false;
+			var arguments = argumentList.GetArgumentResolveResults().ToArray();
+			var argumentNames = argumentList.GetArgumentNames();
+			for (int i = 0; i < argumentList.Arguments.Length; i++)
+			{
+				if (!TryGetCastedArgumentResolveResult(argumentList.Arguments[i], argumentList.ExpectedParameters[i], out var castedArgument))
+					continue;
+				var testArguments = (ResolveResult[])arguments.Clone();
+				testArguments[i] = castedArgument;
+				if (IsUnambiguousCall(expectedTargetDetails, method, targetResolveResult, typeArguments,
+					testArguments, argumentNames, argumentList.FirstOptionalArgumentIndex, out _,
+					out var bestCandidateIsExpandedForm) == OverloadResolutionErrors.None
+					&& bestCandidateIsExpandedForm == argumentList.IsExpandedForm)
+				{
+					CastArgument(argumentList.Arguments, argumentList.ExpectedParameters, i);
+					return true;
 				}
 			}
+			return false;
+		}
+
+		private bool TryGetCastedArgumentResolveResult(TranslatedExpression argument, IParameter parameter, out ResolveResult castedArgument)
+		{
+			castedArgument = null;
+			if (parameter.ReferenceKind != ReferenceKind.None)
+				return false;
+			if (!TryGetParameterCastType(argument, parameter, out var parameterType))
+				return false;
+			if (argument.Expression.Annotation<ImplicitConversionAnnotation>() is { } implicitConversion
+				&& NormalizeTypeVisitor.IgnoreNullabilityAndTuples.EquivalentTypes(implicitConversion.TargetType, parameterType))
+			{
+				castedArgument = implicitConversion.ConversionResolveResult;
+				return true;
+			}
+			if (NormalizeTypeVisitor.IgnoreNullabilityAndTuples.EquivalentTypes(argument.Type, parameterType))
+				return false;
+			var rr = expressionBuilder.resolver.ResolveCast(parameterType, argument.ResolveResult);
+			if (rr.IsError)
+				return false;
+			castedArgument = rr;
+			return true;
+		}
+
+		private void CastArgument(IList<TranslatedExpression> arguments, IList<IParameter> expectedParameters, int index)
+		{
+			if (settings.AnonymousTypes && expectedParameters[index].Type.ContainsAnonymousType())
+			{
+				if (arguments[index].Expression is LambdaExpression lambda)
+				{
+					ModifyReturnTypeOfLambda(lambda);
+				}
+			}
+			else if (TryGetParameterCastType(arguments[index], expectedParameters[index], out var parameterType))
+			{
+				arguments[index] = arguments[index].ConvertTo(parameterType, expressionBuilder, allowImplicitConversion: false);
+			}
+		}
+
+		private bool TryGetParameterCastType(TranslatedExpression argument, IParameter parameter, out IType parameterType)
+		{
+			if (parameter.Type.Kind == TypeKind.Dynamic)
+			{
+				parameterType = expressionBuilder.compilation.FindType(KnownTypeCode.Object);
+			}
+			else
+			{
+				parameterType = parameter.Type;
+			}
+
+			if (parameter.ReferenceKind == ReferenceKind.In && parameterType is ByReferenceType brt && argument.Type is not ByReferenceType)
+			{
+				parameterType = brt.ElementType;
+			}
+
+			return parameterType.Kind != TypeKind.Void && parameterType.Kind != TypeKind.None;
 		}
 
 		static bool IsNullConditional(Expression expr)
