@@ -275,6 +275,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 
 			var projectReferences = GetProjectReferences(project);
 			var dependencyHints = project as IProjectDependencyHintProvider;
+			var writtenReferences = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
 			foreach (var reference in module.AssemblyReferences.Where(r => !ImplicitReferences.Contains(r.Name)))
 			{
@@ -283,12 +284,13 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 					xml.WriteStartElement("ProjectReference");
 					xml.WriteAttributeString("Include", projectReference.RelativeCsprojPath);
 					xml.WriteEndElement();
+					WriteProjectDependencyReferences(xml, project, dependencyHints, projectReference, writtenReferences);
 					continue;
 				}
 
 				if (dependencyHints != null && dependencyHints.TryGetDependencyHintPath(reference.Name, out var dependencyHintPath))
 				{
-					WriteReference(xml, reference.Name, FileUtility.GetRelativePath(project.TargetDirectory, dependencyHintPath));
+					WriteReference(xml, reference.Name, FileUtility.GetRelativePath(project.TargetDirectory, dependencyHintPath), writtenReferences);
 					continue;
 				}
 
@@ -301,12 +303,32 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				var hintPath = asembly != null && !project.AssemblyReferenceClassifier.IsGacAssembly(reference)
 					? FileUtility.GetRelativePath(project.TargetDirectory, asembly.FileName)
 					: null;
-				WriteReference(xml, reference.Name, hintPath);
+				WriteReference(xml, reference.Name, hintPath, writtenReferences);
 			}
 		}
 
-		static void WriteReference(XmlTextWriter xml, string assemblyName, string hintPath)
+		static void WriteProjectDependencyReferences(
+			XmlTextWriter xml,
+			IProjectInfoProvider project,
+			IProjectDependencyHintProvider dependencyHints,
+			ProjectReferenceInfo projectReference,
+			HashSet<string> writtenReferences)
 		{
+			if (dependencyHints == null)
+				return;
+
+			foreach (var dependencyAssemblyName in projectReference.DependencyAssemblyNames)
+			{
+				if (dependencyHints.TryGetDependencyHintPath(dependencyAssemblyName, out var dependencyHintPath))
+					WriteReference(xml, dependencyAssemblyName, FileUtility.GetRelativePath(project.TargetDirectory, dependencyHintPath), writtenReferences);
+			}
+		}
+
+		static void WriteReference(XmlTextWriter xml, string assemblyName, string hintPath, HashSet<string> writtenReferences)
+		{
+			if (!writtenReferences.Add(assemblyName))
+				return;
+
 			xml.WriteStartElement("Reference");
 			xml.WriteAttributeString("Include", assemblyName);
 

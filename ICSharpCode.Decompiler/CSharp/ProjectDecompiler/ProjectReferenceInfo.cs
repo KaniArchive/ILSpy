@@ -5,14 +5,22 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 public class ProjectReferenceInfo
 {
 	public ProjectReferenceInfo(string assemblyName, string relativeCsprojPath)
+		: this(assemblyName, relativeCsprojPath, [])
+	{
+	}
+
+	public ProjectReferenceInfo(string assemblyName, string relativeCsprojPath, IReadOnlyList<string> dependencyAssemblyNames)
 	{
 		AssemblyName = assemblyName;
 		RelativeCsprojPath = relativeCsprojPath;
+		DependencyAssemblyNames = dependencyAssemblyNames;
 	}
 
 	public string AssemblyName { get; }
 
 	public string RelativeCsprojPath { get; }
+
+	public IReadOnlyList<string> DependencyAssemblyNames { get; }
 }
 
 public interface IProjectReferenceInfoProvider
