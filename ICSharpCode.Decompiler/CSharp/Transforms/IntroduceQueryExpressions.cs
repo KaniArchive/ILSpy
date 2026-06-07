@@ -221,7 +221,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (invocation == null)
 				return null;
 			MemberReferenceExpression mre = invocation.Target as MemberReferenceExpression;
-			if (mre == null || IsNullConditional(mre.Target) || IsNullableSourceConsumedByValueAggregate(invocation, mre.Target))
+			if (mre == null || ContainsNullConditional(mre.Target))
 				return null;
 			switch (mre.MemberName)
 			{
@@ -452,19 +452,6 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		{
 			return IsNullConditional(target)
 				|| target.Descendants.OfType<UnaryOperatorExpression>().Any(uoe => uoe.Operator == UnaryOperatorType.NullConditional);
-		}
-
-		bool IsNullableSourceConsumedByValueAggregate(InvocationExpression invocation, Expression source)
-		{
-			if (!ContainsNullConditional(source))
-				return false;
-			if (invocation.Parent is not MemberReferenceExpression { Parent: InvocationExpression aggregateInvocation } aggregateMember
-				|| aggregateMember.Target != invocation)
-			{
-				return false;
-			}
-			return aggregateMember.MemberName is "Sum" or "Average" or "Min" or "Max" or "Count" or "LongCount"
-				&& NullableType.IsNonNullableValueType(aggregateInvocation.GetResolveResult().Type);
 		}
 
 		/// <summary>

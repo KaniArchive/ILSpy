@@ -209,6 +209,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			return arglist?.OrderByDescending((string f) => f.Length).ThenBy((string f) => f.ToLower()).ToList();
 		}
+
+		public long NullConditionalGroupAggregate(IEnumerable<Order> source)
+		{
+			return source?.Where((Order o) => o.Total > 0m)
+				.GroupBy((Order o) => o.CustomerID)
+				.ToDictionary((IGrouping<int, Order> group) => group.Key, (IGrouping<int, Order> group) => group.Max((Order o) => (long)o.OrderID))
+				.Values.Sum() ?? 0;
+		}
 #endif
 
 		public static IEnumerable<char> Issue1310a(bool test)
