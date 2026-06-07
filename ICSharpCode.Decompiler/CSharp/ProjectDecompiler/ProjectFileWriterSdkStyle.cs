@@ -54,6 +54,11 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			"System.Xaml",
 		};
 
+		static readonly HashSet<string> FrameworkReferencePacks = new HashSet<string> {
+			"Microsoft.AspNetCore.App",
+			"Microsoft.WindowsDesktop.App",
+		};
+
 		enum ProjectType { Default, WinForms, Wpf, Web }
 
 		/// <summary>
@@ -276,9 +281,23 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			var projectReferences = GetProjectReferences(project);
 			var dependencyHints = project as IProjectDependencyHintProvider;
 			var writtenReferences = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var frameworkPacks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var queue = new Queue<(IAssemblyReference Reference, bool IsDirect)>();
 
-			foreach (var reference in module.AssemblyReferences.Where(r => !ImplicitReferences.Contains(r.Name)))
+			foreach (var reference in module.AssemblyReferences)
+				queue.Enqueue((reference, true));
+
+			while (queue.Count > 0)
 			{
+				var (reference, isDirect) = queue.Dequeue();
+
+				if (ImplicitReferences.Contains(reference.Name))
+					continue;
+
+				if (!processed.Add(reference.Name))
+					continue;
+
 				if (projectReferences.TryGetValue(reference.Name, out var projectReference))
 				{
 					xml.WriteStartElement("ProjectReference");
@@ -288,22 +307,56 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 					continue;
 				}
 
-				if (dependencyHints != null && dependencyHints.TryGetDependencyHintPath(reference.Name, out var dependencyHintPath))
+				string sharedRuntimePack = null;
+				bool isShared = isNetCoreApp && project.AssemblyReferenceClassifier.IsSharedAssembly(reference, out sharedRuntimePack);
+
+				if (isShared)
 				{
-					WriteReference(xml, reference.Name, FileUtility.GetRelativePath(project.TargetDirectory, dependencyHintPath), writtenReferences);
-					continue;
+					if (targetPacks.Contains(sharedRuntimePack))
+						continue;
+
+					if (FrameworkReferencePacks.Contains(sharedRuntimePack))
+					{
+						frameworkPacks.Add(sharedRuntimePack);
+						continue;
+					}
 				}
 
-				if (isNetCoreApp && project.AssemblyReferenceClassifier.IsSharedAssembly(reference, out string runtimePack) && targetPacks.Contains(runtimePack))
+				string dependencyHintPath = null;
+				bool fromHint = dependencyHints != null && dependencyHints.TryGetDependencyHintPath(reference.Name, out dependencyHintPath);
+
+				string hintPath = null;
+				if (fromHint)
+					hintPath = FileUtility.GetRelativePath(project.TargetDirectory, dependencyHintPath);
+				else if (isDirect)
 				{
-					continue;
+					var resolvedFile = project.AssemblyResolver.Resolve(reference);
+					if (resolvedFile != null && !project.AssemblyReferenceClassifier.IsGacAssembly(reference))
+						hintPath = FileUtility.GetRelativePath(project.TargetDirectory, resolvedFile.FileName);
 				}
 
-				var asembly = project.AssemblyResolver.Resolve(reference);
-				var hintPath = asembly != null && !project.AssemblyReferenceClassifier.IsGacAssembly(reference)
-					? FileUtility.GetRelativePath(project.TargetDirectory, asembly.FileName)
-					: null;
-				WriteReference(xml, reference.Name, hintPath, writtenReferences);
+				if (fromHint)
+				{
+					WriteReference(xml, reference.Name, hintPath, writtenReferences);
+
+					var hintedFile = project.AssemblyResolver.Resolve(reference);
+					if (hintedFile != null)
+					{
+						foreach (var transitiveReference in hintedFile.AssemblyReferences)
+							queue.Enqueue((transitiveReference, false));
+					}
+				}
+				else if (isDirect)
+				{
+					WriteReference(xml, reference.Name, hintPath, writtenReferences);
+				}
+			}
+
+			foreach (var pack in frameworkPacks.OrderBy(p => p, StringComparer.Ordinal))
+			{
+				xml.WriteStartElement("FrameworkReference");
+				xml.WriteAttributeString("Include", pack);
+				xml.WriteEndElement();
 			}
 		}
 
