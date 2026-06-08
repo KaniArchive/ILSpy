@@ -84,6 +84,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		{
 			base.VisitBlockStatement(blockStatement);
 			TransformTailGotoReturns(blockStatement);
+			TransformSharedGotoEpilogue(blockStatement);
 			TransformUnassignedGotoStateDispatch(blockStatement);
 		}
 
@@ -248,6 +249,146 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			label.Remove();
 			returnStatement.Remove();
 			RemoveUninitializedDeclaration(blockStatement, returnVariable);
+		}
+
+		static void TransformSharedGotoEpilogue(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			for (int i = 0; i + 4 < statements.Count; i++)
+			{
+				if (statements[i] is not LabelStatement epilogueLabel)
+					continue;
+				if (statements[i + 1] is not ExpressionStatement epilogueStatement)
+					continue;
+				if (!IsIncrementStatement(epilogueStatement, out var incrementTarget))
+					continue;
+				int resetLabelIndex = i + 2;
+				if (statements[resetLabelIndex] is not ReturnStatement returnStatement || !returnStatement.Expression.IsNull)
+					continue;
+				resetLabelIndex++;
+				if (resetLabelIndex + 2 >= statements.Count)
+					continue;
+				if (statements[resetLabelIndex] is not LabelStatement resetLabel)
+					continue;
+				if (statements[resetLabelIndex + 1] is not ExpressionStatement resetStatement)
+					continue;
+				if (statements[resetLabelIndex + 2] is not GotoStatement resetGoto || resetGoto.Label != epilogueLabel.Label)
+					continue;
+				if (resetLabelIndex + 3 != statements.Count)
+					continue;
+
+				var resetGotos = blockStatement.Descendants
+					.OfType<GotoStatement>()
+					.Where(gotoStatement => gotoStatement.Label == resetLabel.Label)
+					.ToList();
+				var epilogueGotos = blockStatement.Descendants
+					.OfType<GotoStatement>()
+					.Where(gotoStatement => gotoStatement.Label == epilogueLabel.Label && gotoStatement != resetGoto)
+					.ToList();
+				if (resetGotos.Count == 0 && epilogueGotos.Count == 0)
+					continue;
+
+				foreach (var gotoStatement in resetGotos)
+				{
+					ReplaceGotoWith(gotoStatement, CreateResetEpilogueStatements(resetStatement, epilogueStatement, returnStatement, incrementTarget));
+				}
+				foreach (var gotoStatement in epilogueGotos)
+				{
+					ReplaceGotoWith(gotoStatement, CreateEpilogueStatements(epilogueStatement, returnStatement));
+				}
+				for (int j = statements.Count - 1; j >= i; j--)
+				{
+					statements[j].Remove();
+				}
+				return;
+			}
+		}
+
+		static IEnumerable<Statement> CreateResetEpilogueStatements(ExpressionStatement resetStatement, ExpressionStatement epilogueStatement, ReturnStatement returnStatement, Expression incrementTarget)
+		{
+			if (TryFoldResetIncrement(resetStatement, incrementTarget, out var foldedReset))
+			{
+				yield return foldedReset;
+			}
+			else
+			{
+				yield return resetStatement.Clone();
+				yield return epilogueStatement.Clone();
+			}
+			yield return returnStatement.Clone();
+		}
+
+		static IEnumerable<Statement> CreateEpilogueStatements(ExpressionStatement epilogueStatement, ReturnStatement returnStatement)
+		{
+			yield return epilogueStatement.Clone();
+			yield return returnStatement.Clone();
+		}
+
+		static bool TryFoldResetIncrement(ExpressionStatement resetStatement, Expression incrementTarget, out ExpressionStatement foldedReset)
+		{
+			foldedReset = null;
+			if (resetStatement.Expression is not AssignmentExpression {
+				Operator: AssignmentOperatorType.Assign,
+				Left: IdentifierExpression resetTarget,
+				Right: PrimitiveExpression { Value: int resetValue }
+			})
+				return false;
+			if (incrementTarget is not IdentifierExpression incrementIdentifier || resetTarget.Identifier != incrementIdentifier.Identifier)
+				return false;
+			foldedReset = new ExpressionStatement(
+				new AssignmentExpression(
+					resetTarget.Clone(),
+					AssignmentOperatorType.Assign,
+					new PrimitiveExpression(resetValue + 1))).CopyAnnotationsFrom(resetStatement);
+			return true;
+		}
+
+		static bool IsIncrementStatement(ExpressionStatement statement, out Expression target)
+		{
+			target = null;
+			if (statement.Expression is UnaryOperatorExpression {
+				Operator: UnaryOperatorType.PostIncrement or UnaryOperatorType.Increment,
+				Expression: Expression incrementTarget
+			})
+			{
+				target = incrementTarget;
+				return true;
+			}
+			if (statement.Expression is AssignmentExpression {
+				Operator: AssignmentOperatorType.Add,
+				Left: Expression assignmentTarget,
+				Right: PrimitiveExpression { Value: int addValue }
+			} && addValue == 1)
+			{
+				target = assignmentTarget;
+				return true;
+			}
+			return false;
+		}
+
+		static void ReplaceGotoWith(GotoStatement gotoStatement, IEnumerable<Statement> replacementStatements)
+		{
+			var statements = replacementStatements.ToList();
+			if (statements.Count == 0)
+			{
+				gotoStatement.Remove();
+				return;
+			}
+			if (gotoStatement.Parent is BlockStatement block)
+			{
+				foreach (var statement in statements)
+				{
+					block.Statements.InsertBefore(gotoStatement, statement);
+				}
+				gotoStatement.Remove();
+				return;
+			}
+			var replacementBlock = new BlockStatement();
+			foreach (var statement in statements)
+			{
+				replacementBlock.Add(statement);
+			}
+			gotoStatement.ReplaceWith(replacementBlock);
 		}
 
 		static bool IsUnconditionalExit(Statement statement)
