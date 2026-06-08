@@ -1432,7 +1432,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (!context.Settings.UseEnhancedUsing)
 				return usingStatement;
 
-			if (usingStatement.GetNextStatement() != null || !(usingStatement.Parent is BlockStatement))
+			if (!(usingStatement.Parent is BlockStatement))
 				return usingStatement;
 
 			if (!(usingStatement.ResourceAcquisition is VariableDeclarationStatement))
@@ -1441,8 +1441,46 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			if (HasLabelOrGotoInAncestorBlock(usingStatement))
 				return usingStatement;
 
+			TransformUsingTailReturnTemporary(usingStatement);
+
+			if (usingStatement.GetNextStatement() != null)
+				return usingStatement;
+
 			usingStatement.IsEnhanced = true;
 			return usingStatement;
+		}
+
+		static void TransformUsingTailReturnTemporary(UsingStatement usingStatement)
+		{
+			if (usingStatement.Parent is not BlockStatement containingBlock)
+				return;
+			if (usingStatement.GetNextStatement() is not ReturnStatement {
+				Expression: IdentifierExpression returnIdentifier
+			} followingReturn)
+				return;
+			if (followingReturn.GetNextStatement() != null)
+				return;
+			if (usingStatement.EmbeddedStatement is not BlockStatement usingBody)
+				return;
+			if (usingBody.Statements.LastOrDefault() is not ExpressionStatement {
+				Expression: AssignmentExpression {
+					Operator: AssignmentOperatorType.Assign,
+					Left: IdentifierExpression assignedIdentifier,
+					Right: Expression assignedValue
+				}
+			} assignmentStatement)
+				return;
+
+			var returnVariable = returnIdentifier.GetILVariable();
+			if (returnVariable == null || returnVariable != assignedIdentifier.GetILVariable())
+				return;
+			if (containingBlock.DescendantsAndSelf
+				.OfType<IdentifierExpression>()
+				.Count(identifier => identifier.GetILVariable() == returnVariable) != 2)
+				return;
+
+			assignmentStatement.ReplaceWith(new ReturnStatement(assignedValue.Detach()).CopyAnnotationsFrom(assignmentStatement));
+			followingReturn.Remove();
 		}
 
 		static bool HasLabelOrGotoInAncestorBlock(UsingStatement usingStatement)
