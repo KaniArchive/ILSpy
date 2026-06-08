@@ -83,6 +83,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		public override void VisitBlockStatement(BlockStatement blockStatement)
 		{
 			base.VisitBlockStatement(blockStatement);
+			TransformTailGotoReturns(blockStatement);
 			TransformUnassignedGotoStateDispatch(blockStatement);
 		}
 
@@ -192,6 +193,92 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				statements[i + 2].Remove();
 				if (i < statements.Count - 3 && IsNullAssignmentTo(statements[i + 3], returnExpression))
 					statements[i + 3].Remove();
+				return;
+			}
+		}
+
+		static void TransformTailGotoReturns(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			if (statements.Count < 3)
+				return;
+			if (statements[^2] is not LabelStatement label)
+				return;
+			if (statements[^1] is not ReturnStatement {
+				Expression: IdentifierExpression returnIdentifier
+			} returnStatement)
+				return;
+			if (!IsUnconditionalExit(statements[^3]))
+				return;
+
+			var returnVariable = returnIdentifier.GetILVariable();
+			if (returnVariable == null)
+				return;
+			var gotos = blockStatement.Descendants
+				.OfType<GotoStatement>()
+				.Where(gotoStatement => gotoStatement.Label == label.Label)
+				.ToList();
+			if (gotos.Count == 0)
+				return;
+			var assignments = new List<(GotoStatement Goto, ExpressionStatement Statement, Expression Value)>();
+			foreach (var gotoStatement in gotos)
+			{
+				if (gotoStatement.PrevSibling is not ExpressionStatement {
+					Expression: AssignmentExpression {
+						Operator: AssignmentOperatorType.Assign,
+						Left: IdentifierExpression assignedIdentifier,
+						Right: Expression assignedValue
+					}
+				} assignmentStatement)
+					return;
+				if (assignedIdentifier.GetILVariable() != returnVariable)
+					return;
+				assignments.Add((gotoStatement, assignmentStatement, assignedValue));
+			}
+			if (blockStatement.DescendantsAndSelf
+				.OfType<IdentifierExpression>()
+				.Count(identifier => identifier.GetILVariable() == returnVariable) != assignments.Count + 1)
+				return;
+
+			foreach (var assignment in assignments)
+			{
+				assignment.Statement.ReplaceWith(new ReturnStatement(assignment.Value.Detach()).CopyAnnotationsFrom(assignment.Goto));
+				assignment.Goto.Remove();
+			}
+			label.Remove();
+			returnStatement.Remove();
+			RemoveUninitializedDeclaration(blockStatement, returnVariable);
+		}
+
+		static bool IsUnconditionalExit(Statement statement)
+		{
+			return statement switch {
+				ReturnStatement => true,
+				ThrowStatement => true,
+				GotoStatement => true,
+				BreakStatement => true,
+				ContinueStatement => true,
+				BlockStatement block => block.Statements.LastOrDefault() is { } lastStatement && IsUnconditionalExit(lastStatement),
+				_ => false
+			};
+		}
+
+		static void RemoveUninitializedDeclaration(BlockStatement blockStatement, IL.ILVariable variable)
+		{
+			if (blockStatement.DescendantsAndSelf
+				.OfType<IdentifierExpression>()
+				.Any(identifier => identifier.GetILVariable() == variable))
+				return;
+			foreach (var declaration in blockStatement.Statements.OfType<VariableDeclarationStatement>())
+			{
+				if (declaration.Variables.Count != 1)
+					continue;
+				var initializer = declaration.Variables.Single();
+				if (!initializer.Initializer.IsNull)
+					continue;
+				if (initializer.GetILVariable() != variable)
+					continue;
+				declaration.Remove();
 				return;
 			}
 		}
