@@ -1296,6 +1296,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			var carrierDocument = ChooseCarrierDocument(fullTypeName, requests);
 			var accessorOwners = BuildAccessorOwnerMap(membersByDocument, unmappedMembers);
+			var requestedSelections = new List<(SourceDocumentSliceRequest Request, HashSet<EntityHandle> SelectedHandles, bool PreserveSharedTypeMembers)>();
 			var result = new List<DecompiledDocumentSlice>();
 			foreach (var request in requests)
 			{
@@ -1335,13 +1336,20 @@ namespace ICSharpCode.Decompiler.CSharp
 				if (selectedHandles.Count == 0)
 					continue;
 
+				requestedSelections.Add((request, selectedHandles, preserveSharedTypeMembers));
+			}
+
+			var nestedPartialTypeHandles = GetNestedPartialTypeHandles(requestedSelections.Select(selection => selection.SelectedHandles));
+			foreach (var (request, selectedHandles, preserveSharedTypeMembers) in requestedSelections)
+			{
 				var slice = SliceSyntaxTree(
 					cacheEntry.CreateClone(),
 					selectedHandles,
 					requests.Count > 1,
 					preserveSharedTypeMembers,
 					request.TypeDeclarationHandles.Count > 0,
-					request.MemberHandles.Count == 0);
+					request.MemberHandles.Count == 0,
+					nestedPartialTypeHandles);
 				if (slice != null)
 				{
 					result.Add(new DecompiledDocumentSlice(request.DocumentPath, slice, selectedHandles.ToList()));
@@ -1404,6 +1412,31 @@ namespace ICSharpCode.Decompiler.CSharp
 					&& !currentRequest.TypeDeclarationHandles.Contains(declaringType)
 					&& requests.Any(request => request.TypeDeclarationHandles.Contains(declaringType));
 			}
+
+			HashSet<EntityHandle> GetNestedPartialTypeHandles(IEnumerable<HashSet<EntityHandle>> selections)
+			{
+				var counts = new Dictionary<TypeDefinitionHandle, int>();
+				foreach (var selection in selections)
+				{
+					foreach (var typeHandle in selection
+						.Select(GetDeclaringTypeDefinitionHandle)
+						.Where(IsNestedTypeDefinition)
+						.Distinct())
+					{
+						counts.TryGetValue(typeHandle, out var count);
+						counts[typeHandle] = count + 1;
+					}
+				}
+
+				return counts
+					.Where(pair => pair.Value > 1)
+					.Select(pair => (EntityHandle)pair.Key)
+					.ToHashSet();
+			}
+
+			bool IsNestedTypeDefinition(TypeDefinitionHandle typeHandle) =>
+				!typeHandle.IsNil
+				&& !metadata.GetTypeDefinition(typeHandle).GetDeclaringType().IsNil;
 		}
 
 		Dictionary<MethodDefinitionHandle, (EntityHandle MemberHandle, string DocumentPath)> BuildAccessorOwnerMap(Dictionary<string, List<EntityHandle>> membersByDocument, List<EntityHandle> unmappedMembers)
@@ -1728,8 +1761,9 @@ namespace ICSharpCode.Decompiler.CSharp
 			return SliceSyntaxTree(tree, selectedTokens, forcePartial, preserveSharedTypeMembers, preserveSharedTypeMembers);
 		}
 
-		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool forcePartial, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, bool preserveOwnedTypeMembers = true)
+		static SyntaxTree SliceSyntaxTree(SyntaxTree tree, HashSet<EntityHandle> selectedTokens, bool forcePartial, bool preserveSharedTypeMembers, bool ownsTypeDeclaration, bool preserveOwnedTypeMembers = true, HashSet<EntityHandle> nestedPartialTypeHandles = null)
 		{
+			nestedPartialTypeHandles ??= new HashSet<EntityHandle>();
 			bool preserveImplicitSharedTypeMembers = preserveSharedTypeMembers && ownsTypeDeclaration;
 			bool preserveDeclarationOnlyApiSurfaceMembers = preserveSharedTypeMembers;
 			bool rootTypeHandled = false;
@@ -1742,7 +1776,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				return tree;
 			var topLevelType = FindFirstTopLevelType(tree);
 			topLevelType?.Modifiers |= Modifiers.Partial;
-			foreach (var nestedType in tree.Descendants.OfType<TypeDeclaration>().Where(type => type != topLevelType && CanMarkTypePartial(type)))
+			foreach (var nestedType in tree.Descendants.OfType<TypeDeclaration>().Where(type => type != topLevelType && CanMarkTypePartial(type) && HasOwnSelectedDeclaration(type, nestedPartialTypeHandles)))
 			{
 				nestedType.Modifiers |= Modifiers.Partial;
 				if (nestedType.Members.Count == 0)
