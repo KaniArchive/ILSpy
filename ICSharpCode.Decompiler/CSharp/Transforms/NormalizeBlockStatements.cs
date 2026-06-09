@@ -5,6 +5,8 @@ using System.Text;
 
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
+using ICSharpCode.Decompiler.Semantics;
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
 {
@@ -86,6 +88,11 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			TransformTailGotoReturns(blockStatement);
 			TransformSharedGotoEpilogue(blockStatement);
 			TransformUnassignedGotoStateDispatch(blockStatement);
+			TransformTupleItemDeclarations(blockStatement);
+			RemoveRedundantTupleDiscardReads(blockStatement);
+			TransformTupleDeconstructionTemporary(blockStatement);
+			TransformObjectCreationTailReturnTemporary(blockStatement);
+			RemoveFallThroughGotos(blockStatement);
 		}
 
 		public override void VisitUsingStatement(UsingStatement usingStatement)
@@ -161,6 +168,236 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					return parent is UsingStatement && !us.IsEnhanced;
 				default:
 					return !(parent?.Parent is IfElseStatement);
+			}
+		}
+
+		static void RemoveFallThroughGotos(BlockStatement blockStatement)
+		{
+			foreach (var gotoStatement in blockStatement.Statements.OfType<GotoStatement>().ToList())
+			{
+				if (gotoStatement.NextSibling is LabelStatement label
+					&& gotoStatement.Label == label.Label)
+				{
+					gotoStatement.Remove();
+				}
+			}
+		}
+
+		static void TransformObjectCreationTailReturnTemporary(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			for (int i = 0; i + 1 < statements.Count; i++)
+			{
+				if (statements[i] is not VariableDeclarationStatement {
+					Variables.Count: 1
+				} declaration)
+					continue;
+				var initializer = declaration.Variables.Single();
+				if (initializer.Initializer is not ObjectCreateExpression)
+					continue;
+				if (statements[i + 1] is not ReturnStatement {
+					Expression: IdentifierExpression returnIdentifier
+				} returnStatement)
+					continue;
+				var returnVariable = returnIdentifier.GetILVariable();
+				if (returnVariable == null || initializer.GetILVariable() != returnVariable)
+					continue;
+				if (!initializer.Initializer.GetResolveResult().Type.Equals(returnVariable.Type))
+					continue;
+				if (blockStatement.DescendantsAndSelf
+					.OfType<IdentifierExpression>()
+					.Count(identifier => identifier.GetILVariable() == returnVariable) != 1)
+					continue;
+
+				returnStatement.Expression = initializer.Initializer.Detach();
+				declaration.Remove();
+			}
+		}
+
+		static void TransformTupleItemDeclarations(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			for (int i = 0; i + 2 < statements.Count; i++)
+			{
+				if (statements[i] is not VariableDeclarationStatement {
+					Variables.Count: 1,
+					Modifiers: Modifiers.None
+				} tupleDeclaration)
+					continue;
+				var tupleInitializer = tupleDeclaration.Variables.Single();
+				if (tupleInitializer.Initializer.IsNull)
+					continue;
+				var tupleVariable = tupleInitializer.GetILVariable();
+				if (tupleVariable == null)
+					continue;
+				if (!TupleType.IsTupleCompatible(tupleVariable.Type, out int tupleCardinality) || tupleCardinality < 2)
+					continue;
+
+				var elementTypes = TupleType.GetTupleElementTypes(tupleVariable.Type);
+				var elementDeclarations = new List<(VariableDeclarationStatement Statement, VariableInitializer Initializer)>();
+				int nextItemIndex = 1;
+				for (int j = i + 1; j < statements.Count && nextItemIndex <= tupleCardinality; j++)
+				{
+					if (!TryMatchTupleItemDeclaration(statements[j], tupleVariable, nextItemIndex, elementTypes[nextItemIndex - 1], out var elementDeclaration, out var elementInitializer))
+						break;
+					elementDeclarations.Add((elementDeclaration, elementInitializer));
+					nextItemIndex++;
+				}
+				if (elementDeclarations.Count < 2)
+					continue;
+				if (blockStatement.DescendantsAndSelf
+					.OfType<IdentifierExpression>()
+					.Count(identifier => identifier.GetILVariable() == tupleVariable) != elementDeclarations.Count)
+					continue;
+
+				var designation = new ParenthesizedVariableDesignation();
+				foreach (var (_, elementInitializer) in elementDeclarations)
+				{
+					var variable = elementInitializer.GetILVariable();
+					var elementDesignation = new SingleVariableDesignation {
+						Identifier = elementInitializer.Name
+					};
+					elementDesignation.AddAnnotation(new ILVariableResolveResult(variable, variable.Type));
+					designation.VariableDesignations.Add(elementDesignation);
+				}
+				for (int j = elementDeclarations.Count; j < tupleCardinality; j++)
+				{
+					designation.VariableDesignations.Add(new SingleVariableDesignation { Identifier = "_" });
+				}
+
+				tupleDeclaration.ReplaceWith(new ExpressionStatement(
+					new AssignmentExpression(
+						new DeclarationExpression {
+							Type = new SimpleType("var"),
+							Designation = designation
+						},
+						tupleInitializer.Initializer.Detach()))
+					.CopyAnnotationsFrom(tupleDeclaration));
+				foreach (var (statement, _) in elementDeclarations)
+				{
+					statement.Remove();
+				}
+				i += elementDeclarations.Count;
+			}
+		}
+
+		static bool TryMatchTupleItemDeclaration(Statement statement, IL.ILVariable tupleVariable, int itemIndex, IType elementType,
+			out VariableDeclarationStatement declaration, out VariableInitializer initializer)
+		{
+			declaration = statement as VariableDeclarationStatement;
+			initializer = null;
+			if (declaration is not {
+				Variables.Count: 1,
+				Modifiers: Modifiers.None
+			})
+				return false;
+			initializer = declaration.Variables.Single();
+			if (initializer.GetILVariable() is not { } elementVariable)
+				return false;
+			if (!elementVariable.Type.Equals(elementType))
+				return false;
+			if (initializer.Initializer is not MemberReferenceExpression {
+				Target: IdentifierExpression tupleIdentifier,
+				TypeArguments.Count: 0
+			} memberReference)
+				return false;
+			return tupleIdentifier.GetILVariable() == tupleVariable
+				&& memberReference.MemberName == "Item" + itemIndex.ToString();
+		}
+
+		static void RemoveRedundantTupleDiscardReads(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			for (int i = 1; i < statements.Count; i++)
+			{
+				if (statements[i] is not ExpressionStatement {
+					Expression: AssignmentExpression {
+						Operator: AssignmentOperatorType.Assign,
+						Left: IdentifierExpression { Identifier: "_" },
+						Right: MemberReferenceExpression tupleItemRead
+					}
+				} discardAssignment)
+					continue;
+				if (!TryGetTupleItemRead(tupleItemRead, out var tupleVariable, out int itemIndex))
+					continue;
+				if (statements[i - 1] is not ExpressionStatement {
+					Expression: AssignmentExpression {
+						Operator: AssignmentOperatorType.Assign,
+						Left: DeclarationExpression {
+							Designation: ParenthesizedVariableDesignation designation
+						},
+						Right: IdentifierExpression deconstructSource
+					}
+				})
+					continue;
+				if (deconstructSource.GetILVariable() != tupleVariable)
+					continue;
+				if (designation.VariableDesignations.Count < itemIndex)
+					continue;
+				if (designation.VariableDesignations.ElementAt(itemIndex - 1) is not SingleVariableDesignation { Identifier: "_" })
+					continue;
+
+				discardAssignment.Remove();
+			}
+		}
+
+		static bool TryGetTupleItemRead(MemberReferenceExpression memberReference, out IL.ILVariable tupleVariable, out int itemIndex)
+		{
+			tupleVariable = null;
+			itemIndex = 0;
+			if (memberReference.Target is not IdentifierExpression tupleIdentifier)
+				return false;
+			tupleVariable = tupleIdentifier.GetILVariable();
+			if (tupleVariable == null)
+				return false;
+			if (!TupleType.IsTupleCompatible(tupleVariable.Type, out int tupleCardinality))
+				return false;
+			if (!memberReference.MemberName.StartsWith("Item", StringComparison.Ordinal))
+				return false;
+			if (!int.TryParse(memberReference.MemberName.Substring("Item".Length), out itemIndex))
+				return false;
+			return itemIndex >= 1 && itemIndex <= tupleCardinality;
+		}
+
+		static void TransformTupleDeconstructionTemporary(BlockStatement blockStatement)
+		{
+			var statements = blockStatement.Statements.ToList();
+			for (int i = 0; i + 1 < statements.Count; i++)
+			{
+				if (statements[i] is not VariableDeclarationStatement {
+					Variables.Count: 1,
+					Modifiers: Modifiers.None
+				} tupleDeclaration)
+					continue;
+				var tupleInitializer = tupleDeclaration.Variables.Single();
+				if (tupleInitializer.Initializer.IsNull)
+					continue;
+				var tupleVariable = tupleInitializer.GetILVariable();
+				if (tupleVariable == null)
+					continue;
+				if (!TupleType.IsTupleCompatible(tupleVariable.Type, out int tupleCardinality))
+					continue;
+				if (statements[i + 1] is not ExpressionStatement {
+					Expression: AssignmentExpression {
+						Operator: AssignmentOperatorType.Assign,
+						Left: DeclarationExpression {
+							Designation: ParenthesizedVariableDesignation designation
+						},
+						Right: IdentifierExpression deconstructSource
+					} assignment
+				})
+					continue;
+				if (deconstructSource.GetILVariable() != tupleVariable)
+					continue;
+				if (designation.VariableDesignations.Count != tupleCardinality)
+					continue;
+				if (blockStatement.DescendantsAndSelf
+					.OfType<IdentifierExpression>()
+					.Count(identifier => identifier.GetILVariable() == tupleVariable) != 1)
+					continue;
+
+				assignment.Right = tupleInitializer.Initializer.Detach();
+				tupleDeclaration.Remove();
 			}
 		}
 

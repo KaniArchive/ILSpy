@@ -62,6 +62,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				{
 					if (stloc.Parent is Block block)
 					{
+						if (ShouldPreserveDeadStore(v, stloc))
+							continue;
 						context.Step($"Dead store to {v.Name}", stloc);
 						if (SemanticHelper.IsPure(stloc.Value.Flags))
 						{
@@ -102,6 +104,13 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						v.Type = newType;
 				}
 			}
+		}
+
+		static bool ShouldPreserveDeadStore(ILVariable variable, StLoc stloc)
+		{
+			return variable.Kind == VariableKind.Local
+				&& !variable.HasGeneratedName
+				&& !SemanticHelper.IsPure(stloc.Value.Flags);
 		}
 
 		internal static void ResetUsesInitialValueFlag(ILFunction function, ILTransformContext context)

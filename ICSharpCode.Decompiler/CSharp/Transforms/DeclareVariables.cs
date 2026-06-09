@@ -251,7 +251,15 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			var instructions = expression.DescendantsAndSelf
 				.SelectMany(node => node.Annotations.OfType<ILInstruction>())
 				.ToList();
-			return instructions.Count > 0 && instructions.All(inst => SemanticHelper.IsPure(inst.Flags));
+			return instructions.Count > 0 && instructions.All(inst => SemanticHelper.IsPure(inst.Flags) || IsKnownPureStaticFieldLoad(inst));
+		}
+
+		static bool IsKnownPureStaticFieldLoad(ILInstruction inst)
+		{
+			return inst.MatchLdsFld(out var field)
+				&& field.IsStatic
+				&& field.DeclaringType.IsKnownType(KnownTypeCode.String)
+				&& field.Name == "Empty";
 		}
 
 		private static bool IsValidInStatementExpression(Expression expr)
