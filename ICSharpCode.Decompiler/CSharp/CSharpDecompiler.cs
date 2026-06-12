@@ -1844,7 +1844,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			if (!ownsTypeDeclaration)
 				return PruneNode(typeDecl, selectedTokens, preserveSharedTypeMembers, preserveImplicitSharedTypeMembers, preserveDeclarationOnlyApiSurfaceMembers);
 
-			if (!preserveOwnedTypeMembers || !preserveSharedTypeMembers)
+			if (!preserveSharedTypeMembers)
 				typeDecl.Attributes.Clear();
 
 			bool hasSelectedMethodLikeMember = typeDecl.Members.Any(member => IsSelectedMethodLikeMember(member, selectedTokens));
