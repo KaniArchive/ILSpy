@@ -42,6 +42,8 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		public override void VisitIfElseStatement(IfElseStatement ifElseStatement)
 		{
 			base.VisitIfElseStatement(ifElseStatement);
+			if (TransformTypePatternReturnSwitch(ifElseStatement))
+				return;
 			DoTransform(ifElseStatement.TrueStatement, ifElseStatement);
 			DoTransform(ifElseStatement.FalseStatement, ifElseStatement);
 		}
@@ -169,6 +171,265 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				default:
 					return !(parent?.Parent is IfElseStatement);
 			}
+		}
+
+		bool TransformTypePatternReturnSwitch(IfElseStatement node)
+		{
+			if (!context.Settings.SwitchExpressions)
+				return false;
+
+			bool removeFollowingReturn = false;
+			ReturnStatement matchedReturn;
+			if (node.FalseStatement.IsNull)
+			{
+				if (node.NextSibling is not ReturnStatement followingReturn)
+					return false;
+				matchedReturn = followingReturn;
+				removeFollowingReturn = true;
+			}
+			else if (!TryGetSingleReturn(node.FalseStatement, out matchedReturn))
+			{
+				return false;
+			}
+
+			var arms = new List<(Expression Pattern, Expression Body, IL.ILVariable Variable)>();
+			if (!TryCollectNegativeTypePatternReturnChain(node, matchedReturn, arms, out var switchValue, out var defaultBody))
+				return false;
+			if (arms.Count < 2 || !CanUseAsSwitchValue(switchValue))
+				return false;
+
+			var switchExpression = new SwitchExpression {
+				Expression = switchValue.Detach()
+			}.CopyAnnotationsFrom(node);
+
+			foreach (var arm in arms)
+			{
+				NormalizeSwitchArmPatternVariable(arm.Pattern, arm.Body, arm.Variable);
+				switchExpression.SwitchSections.Add(new SwitchExpressionSection {
+					Pattern = arm.Pattern.Detach(),
+					Body = arm.Body.Detach()
+				});
+			}
+
+			if (TryMoveNestedDefaultSwitchSections(switchExpression, switchValue, defaultBody))
+			{
+				foreach (var section in switchExpression.SwitchSections)
+				{
+					NormalizeSwitchArmPatternVariable(section.Pattern, section.Body, GetPatternVariable(section.Pattern));
+				}
+			}
+			else
+			{
+				switchExpression.SwitchSections.Add(new SwitchExpressionSection {
+					Pattern = new IdentifierExpression("_"),
+					Body = defaultBody.Detach()
+				});
+			}
+
+			var replacement = new ReturnStatement(switchExpression).CopyAnnotationsFrom(matchedReturn);
+			node.ReplaceWith(replacement);
+			if (removeFollowingReturn)
+			{
+				matchedReturn.Remove();
+			}
+			return true;
+		}
+
+		bool TryCollectNegativeTypePatternReturnChain(IfElseStatement node, ReturnStatement matchedReturn, List<(Expression Pattern, Expression Body, IL.ILVariable Variable)> arms, out Expression switchValue, out Expression defaultBody)
+		{
+			switchValue = null;
+			defaultBody = null;
+			if (!TryMatchTypePatternCondition(node.Condition, negated: true, out var testedOperand, out var pattern, out var variable))
+				return false;
+
+			arms.Add((pattern, matchedReturn.Expression, variable));
+			if (!TryCollectUnmatchedTypePatternReturnChain(node.TrueStatement, testedOperand, arms, out defaultBody))
+				return false;
+
+			switchValue = testedOperand;
+			return true;
+		}
+
+		bool TryCollectUnmatchedTypePatternReturnChain(Statement unmatchedStatement, Expression expectedOperand, List<(Expression Pattern, Expression Body, IL.ILVariable Variable)> arms, out Expression defaultBody)
+		{
+			defaultBody = null;
+			if (TryGetSingleReturn(unmatchedStatement, out var terminalDefaultReturn))
+			{
+				defaultBody = terminalDefaultReturn.Expression;
+				return true;
+			}
+
+			if (unmatchedStatement is IfElseStatement directIfStatement)
+			{
+				return TryCollectUnmatchedTypePatternReturnChain(directIfStatement, expectedOperand, arms, out defaultBody);
+			}
+
+			if (unmatchedStatement is not BlockStatement block)
+				return false;
+
+			var statements = block.Statements.ToArray();
+			if (statements.Length != 2 || statements[0] is not IfElseStatement ifStatement || statements[1] is not ReturnStatement followingReturn)
+				return false;
+
+			return TryCollectUnmatchedTypePatternReturnChain(ifStatement, followingReturn, expectedOperand, arms, out defaultBody);
+		}
+
+		bool TryCollectUnmatchedTypePatternReturnChain(IfElseStatement ifStatement, ReturnStatement followingReturn, Expression expectedOperand, List<(Expression Pattern, Expression Body, IL.ILVariable Variable)> arms, out Expression defaultBody)
+		{
+			defaultBody = null;
+			if (TryMatchTypePatternCondition(ifStatement.Condition, negated: true, out var negativeOperand, out var negativePattern, out var negativeVariable))
+			{
+				if (!IsSameSwitchOperand(expectedOperand, negativeOperand))
+					return false;
+				arms.Add((negativePattern, followingReturn.Expression, negativeVariable));
+				return TryCollectUnmatchedTypePatternReturnChain(ifStatement.TrueStatement, expectedOperand, arms, out defaultBody);
+			}
+
+			if (!TryMatchTypePatternCondition(ifStatement.Condition, negated: false, out var positiveOperand, out var positivePattern, out var positiveVariable))
+				return false;
+			if (!IsSameSwitchOperand(expectedOperand, positiveOperand))
+				return false;
+			if (!TryGetSingleReturn(ifStatement.TrueStatement, out var positiveReturn))
+				return false;
+
+			arms.Add((positivePattern, positiveReturn.Expression, positiveVariable));
+			defaultBody = followingReturn.Expression;
+			return true;
+		}
+
+		static bool TryMoveNestedDefaultSwitchSections(SwitchExpression targetSwitch, Expression switchValue, Expression defaultBody)
+		{
+			if (defaultBody is not SwitchExpression nestedSwitch)
+				return false;
+			if (!IsSameSwitchOperand(switchValue, nestedSwitch.Expression))
+				return false;
+
+			foreach (var section in nestedSwitch.SwitchSections.ToArray())
+			{
+				targetSwitch.SwitchSections.Add(section.Detach());
+			}
+			return true;
+		}
+
+		static bool TryMatchTypePatternCondition(Expression condition, bool negated, out Expression testedOperand, out Expression pattern, out IL.ILVariable variable)
+		{
+			testedOperand = null;
+			pattern = null;
+			variable = null;
+			condition = ParenthesizedExpression.UnpackParenthesizedExpression(condition);
+			if (negated)
+			{
+				if (condition is not UnaryOperatorExpression { Operator: UnaryOperatorType.Not } notExpression)
+					return false;
+				condition = ParenthesizedExpression.UnpackParenthesizedExpression(notExpression.Expression);
+			}
+
+			if (condition is BinaryOperatorExpression { Operator: BinaryOperatorType.IsPattern } isPattern)
+			{
+				if (!IsSwitchTypePattern(isPattern.Right))
+					return false;
+
+				testedOperand = ParenthesizedExpression.UnpackParenthesizedExpression(isPattern.Left);
+				pattern = isPattern.Right;
+				variable = GetPatternVariable(pattern);
+				return true;
+			}
+
+			if (condition is IsExpression isExpression)
+			{
+				testedOperand = ParenthesizedExpression.UnpackParenthesizedExpression(isExpression.Expression);
+				pattern = new TypeReferenceExpression(isExpression.Type.Clone()).CopyAnnotationsFrom(isExpression);
+				return true;
+			}
+
+			return false;
+		}
+
+		static bool IsSwitchTypePattern(Expression pattern)
+		{
+			return pattern is DeclarationExpression or RecursivePatternExpression or TypeReferenceExpression;
+		}
+
+		static IL.ILVariable GetPatternVariable(Expression pattern)
+		{
+			return pattern switch {
+				DeclarationExpression { Designation: SingleVariableDesignation designation } => designation.Annotation<ILVariableResolveResult>()?.Variable,
+				RecursivePatternExpression { Designation: SingleVariableDesignation designation } => designation.Annotation<ILVariableResolveResult>()?.Variable,
+				_ => null,
+			};
+		}
+
+		static void NormalizeSwitchArmPatternVariable(Expression pattern, Expression body, IL.ILVariable variable)
+		{
+			if (variable == null || !IsGeneratedExceptionPatternName(variable.Name))
+				return;
+			if (!TryRenamePatternDesignation(pattern, variable, "e"))
+				return;
+			foreach (var identifier in body.DescendantsAndSelf.OfType<IdentifierExpression>())
+			{
+				if (identifier.GetILVariable() == variable)
+					identifier.Identifier = "e";
+			}
+		}
+
+		static bool TryRenamePatternDesignation(Expression pattern, IL.ILVariable variable, string name)
+		{
+			SingleVariableDesignation designation = pattern switch {
+				DeclarationExpression { Designation: SingleVariableDesignation declarationDesignation } => declarationDesignation,
+				RecursivePatternExpression { Designation: SingleVariableDesignation recursiveDesignation } => recursiveDesignation,
+				_ => null,
+			};
+			if (designation?.Annotation<ILVariableResolveResult>()?.Variable != variable)
+				return false;
+			designation.Identifier = name;
+			return true;
+		}
+
+		static bool IsGeneratedExceptionPatternName(string name)
+		{
+			if (name == "exception")
+				return true;
+			return name.StartsWith("exception", StringComparison.Ordinal)
+				&& name.Skip("exception".Length).All(char.IsDigit);
+		}
+
+		static bool TryGetSingleReturn(Statement statement, out ReturnStatement returnStatement)
+		{
+			returnStatement = statement as ReturnStatement;
+			if (returnStatement != null)
+				return true;
+			if (statement is BlockStatement block)
+			{
+				var statements = block.Statements.ToArray();
+				if (statements.Length == 1)
+				{
+					returnStatement = statements[0] as ReturnStatement;
+					return returnStatement != null;
+				}
+			}
+			return false;
+		}
+
+		static bool CanUseAsSwitchValue(Expression expression)
+		{
+			expression = ParenthesizedExpression.UnpackParenthesizedExpression(expression);
+			if (expression is IdentifierExpression identifier)
+				return identifier.GetILVariable() != null;
+			return expression is ThisReferenceExpression or BaseReferenceExpression;
+		}
+
+		static bool IsSameSwitchOperand(Expression expected, Expression actual)
+		{
+			expected = ParenthesizedExpression.UnpackParenthesizedExpression(expected);
+			actual = ParenthesizedExpression.UnpackParenthesizedExpression(actual);
+			if (expected is IdentifierExpression expectedIdentifier && actual is IdentifierExpression actualIdentifier)
+			{
+				var expectedVariable = expectedIdentifier.GetILVariable();
+				var actualVariable = actualIdentifier.GetILVariable();
+				if (expectedVariable != null || actualVariable != null)
+					return expectedVariable == actualVariable;
+			}
+			return expected.DoMatch(actual, new Match());
 		}
 
 		static void RemoveFallThroughGotos(BlockStatement blockStatement)

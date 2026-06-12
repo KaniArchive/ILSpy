@@ -188,5 +188,83 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			};
 		}
 #endif
+
+#if !EXPECTED_OUTPUT
+		public static Exception TypePatternReturnLadderWithDirectFallback(Exception exception)
+		{
+			if (!(exception is ArgumentException exception2))
+			{
+				if (!(exception is InvalidOperationException exception3))
+				{
+					return new Exception("fallback", exception);
+				}
+				return exception3;
+			}
+			return exception2;
+		}
+#else
+		public static Exception TypePatternReturnLadderWithDirectFallback(Exception exception)
+		{
+			return exception switch {
+				ArgumentException e => e,
+				InvalidOperationException e => e,
+				_ => new Exception("fallback", exception),
+			};
+		}
+#endif
+
+#if !EXPECTED_OUTPUT
+		public static string TypePatternReturnLadderWithNestedSwitch(object value)
+		{
+			if (!(value is string text))
+			{
+				if (!(value is int number))
+				{
+					return value switch {
+						long count => count.ToString(),
+						double ratio => ratio.ToString(),
+						_ => "fallback",
+					};
+				}
+				return number.ToString();
+			}
+			return text;
+		}
+#else
+		public static string TypePatternReturnLadderWithNestedSwitch(object value)
+		{
+			return value switch {
+				string text => text,
+				int number => number.ToString(),
+				long count => count.ToString(),
+				double ratio => ratio.ToString(),
+				_ => "fallback",
+			};
+		}
+#endif
+
+#if !EXPECTED_OUTPUT
+		public static string TypePatternReturnLadderWithTypeOnlyArm(object value)
+		{
+			if (!(value is string text))
+			{
+				if (!(value is IDisposable))
+				{
+					return "fallback";
+				}
+				return "disposable";
+			}
+			return text;
+		}
+#else
+		public static string TypePatternReturnLadderWithTypeOnlyArm(object value)
+		{
+			return value switch {
+				string text => text,
+				IDisposable => "disposable",
+				_ => "fallback",
+			};
+		}
+#endif
 	}
 }
